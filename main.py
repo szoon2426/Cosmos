@@ -2,8 +2,7 @@
 main.py — 웹캠 모션 캡처 메인 실행 파일
 
 단축키:
-    R  : 녹화 시작 / 정지
-    S  : 현재까지 녹화된 데이터 JSON + CSV로 저장
+    T  : 세션 시작 / 종료 (현재 감지된 사람 얼굴 잠금)
     Q  : 프로그램 종료
 """
 
@@ -14,9 +13,9 @@ from src.capture import WebcamCapture
 from src.pose import PoseEstimator
 from src.hand import HandEstimator
 from src.renderer import Renderer
-from src.recorder import MotionRecorder
 from src.assets import check_landmarks
 from src.gesture import GestureDetector, GESTURES
+from src.session import SessionManager
 
 
 def main():
@@ -24,40 +23,39 @@ def main():
     estimator = PoseEstimator()
     hand_est  = HandEstimator()
     renderer  = Renderer()
-    recorder  = MotionRecorder(output_dir="recordings")
     detector  = GestureDetector()
+    session   = SessionManager()
 
     capture.open()
 
     frame_index = 0
-    start_time  = time.time()
+    hand_info: dict = {}
 
     feedbacks: list[dict] = []
     FEEDBACK_TTL = 1.8
 
-    # 에셋 HP 값 (0~100)
+    # 에셋 HP 값 (0~100) — 세션 간 유지
     MAX_HP = 100.0
     asset_values: dict[str, float] = {
         "statue":   MAX_HP,
         "fountain": MAX_HP,
         "flowers":  MAX_HP,
     }
-    # 제스처별 HP 변화량
     DAMAGE = {
-        "punch":      -10.0,   # 조각상 주먹질 → -10
-        "kick":        -5.0,   # 꽃 발길질 → -5
-        "both_hands":   0.0,   # 분수대 손 펼기 → 변화 없음
-        "meditate":    +8.0,   # 명상 → 전체 +8 (tick당)
+        "punch":      -10.0,
+        "kick":        -5.0,
+        "both_hands":   0.0,
+        "meditate":    +8.0,
     }
-    # 제스처별 대상 에셋 id ("__all__" = 전체 회복)
     TARGET_ASSET = {
         "punch":      "statue",
         "kick":       "flowers",
         "both_hands": "fountain",
         "meditate":   "__all__",
     }
+    HEAL_ALL = "__all__"
 
-    print("\n[Main] 시작! 단축키: [R] 녹화  [S] 저장  [Q] 종료\n")
+    print("\n[Main] 시작! 단축키: [T] 세션시작/종료  [Q] 종료\n")
 
     try:
         while True:
@@ -73,8 +71,9 @@ def main():
             h, w = frame.shape[:2]
             landmarks = estimator.get_landmarks_as_dict(pose_results, w, h)
 
-            # 손 상태 감지 (주먹/손바닥)
-            hand_info = hand_est.process(frame_rgb)
+            # 손 상태 감지 (격프레임 — 성능 최적화)
+            if frame_index % 2 == 0:
+                hand_info = hand_est.process(frame_rgb)
 
             # 정규화 랜드마크
             norm_landmarks = None
@@ -84,60 +83,56 @@ def main():
                     for lm in landmarks
                 ]
 
-            # 에셋 근접 감지
-            active_assets = check_landmarks(norm_landmarks)
+            # 세션 관리
+            session_lms = session.update(norm_landmarks)
+            active_lms  = session_lms if session.is_active else None
 
-            # 제스처 감지 → 피드백 + HP 변화
+            active_assets = check_landmarks(active_lms)
             now = time.time()
-            HEAL_ALL = "__all__"   # 전체 회복 신호
-            for gid in detector.update(norm_landmarks, hand_info):
-                g = GESTURES[gid]
 
-                # 기존 피드백은 meditate 중복 방지 (이미 'HEALING...' 중이면 갱신만)
-                existing = [fb for fb in feedbacks if fb["label"] == g["label"]]
-                if existing:
-                    existing[0]["triggered_at"] = now  # 시간만 갱신
-                else:
-                    feedbacks.append({
-                        "label":        g["label"],
-                        "color":        g["color"],
-                        "triggered_at": now,
-                    })
+            if session.is_active and active_lms is not None:
+                for gid in detector.update(active_lms, hand_info):
+                    g = GESTURES[gid]
 
-                # ── HP 변화 ──────────────────────────────────
-                target = TARGET_ASSET.get(gid)
-                dmg    = DAMAGE.get(gid, 0.0)
+                    existing = [fb for fb in feedbacks if fb["label"] == g["label"]]
+                    if existing:
+                        existing[0]["triggered_at"] = now
+                    else:
+                        feedbacks.append({
+                            "label":        g["label"],
+                            "color":        g["color"],
+                            "triggered_at": now,
+                        })
 
-                if target == HEAL_ALL:
-                    # 모든 에셋 회복
-                    for k in asset_values:
-                        asset_values[k] = min(MAX_HP, asset_values[k] + abs(dmg))
-                    print(f"[Gesture] {gid} → {g['label']}  | All healed +{abs(dmg):.0f}")
-                elif target and dmg != 0.0:
-                    asset_values[target] = max(0.0, min(MAX_HP, asset_values[target] + dmg))
-                    print(f"[Gesture] {gid} → {g['label']}  |  {target}: {asset_values[target]:.0f} HP")
+                    target = TARGET_ASSET.get(gid)
+                    dmg    = DAMAGE.get(gid, 0.0)
+                    if target == HEAL_ALL:
+                        for k in asset_values:
+                            asset_values[k] = min(MAX_HP, asset_values[k] + abs(dmg))
+                        print(f"[Gesture] {gid} → {g['label']}  | All +{abs(dmg):.0f} HP")
+                    elif target and dmg != 0.0:
+                        asset_values[target] = max(0.0, min(MAX_HP, asset_values[target] + dmg))
+                        print(f"[Gesture] {gid} → {g['label']}  |  {target}: {asset_values[target]:.0f} HP")
+            else:
+                detector.update(None, None)
 
-            # 만료 피드백 제거
             feedbacks = [fb for fb in feedbacks
                          if now - fb["triggered_at"] <= FEEDBACK_TTL]
-
-            # 녹화
-            if recorder.is_recording:
-                elapsed = time.time() - start_time
-                recorder.add_frame(frame_index, elapsed, landmarks)
 
             # 렌더링
             frame = renderer.draw_assets(frame, active_assets)
             frame = renderer.draw_asset_values(frame, asset_values, MAX_HP)
-            frame = renderer.draw_skeleton(frame, landmarks)
-            frame = renderer.draw_hand_landmarks(frame, hand_info)
-            frame = renderer.draw_hand_status(frame, hand_info)
+            if session.is_active and active_lms is not None:
+                frame = renderer.draw_skeleton(frame, landmarks)
+                frame = renderer.draw_hand_landmarks(frame, hand_info)
+                frame = renderer.draw_hand_status(frame, hand_info)
             frame = renderer.draw_feedback(frame, feedbacks)
+            frame = renderer.draw_session_state(frame, session.is_active, session.progress())
             frame = renderer.draw_hud(
                 frame,
-                is_recording=recorder.is_recording,
-                frame_count=recorder.frame_count,
-                detected=landmarks is not None,
+                is_recording=False,
+                frame_count=0,
+                detected=active_lms is not None,
             )
 
             cv2.imshow("Motion Capture", frame)
@@ -147,18 +142,11 @@ def main():
             if key == ord("q"):
                 print("[Main] 종료합니다.")
                 break
-            elif key == ord("r"):
-                if recorder.is_recording:
-                    recorder.stop()
+            elif key == ord("t"):
+                if session.is_active:
+                    session.end()
                 else:
-                    start_time = time.time()
-                    recorder.start()
-            elif key == ord("s"):
-                if recorder.frame_count > 0:
-                    recorder.save_json()
-                    recorder.save_csv()
-                else:
-                    print("[Main] 저장할 데이터 없음. R키로 녹화 먼저 하세요.")
+                    session.start(norm_landmarks)
 
     finally:
         capture.release()

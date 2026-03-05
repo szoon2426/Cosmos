@@ -327,6 +327,58 @@ class Renderer:
 
         return frame
 
+    # ── 세션 상태 표시 ─────────────────────────────────────
+    def draw_session_state(
+        self,
+        frame: np.ndarray,
+        is_active: bool,
+        progress: float = 1.0,
+    ) -> np.ndarray:
+        """
+        세션 상태를 화면에 표시합니다.
+
+        Args:
+            is_active: 세션 활성 여부
+            progress:  1.0=정상, 0.0=타임아웃 직전 (코 안 보임)
+        """
+        h, w = frame.shape[:2]
+
+        if not is_active:
+            # IDLE — 반투명 오버레이 + 안내 메시지
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+            msg1 = "WAITING FOR PLAYER"
+            msg2 = "[T] to start session"
+            font = cv2.FONT_HERSHEY_DUPLEX
+            (w1, h1), _ = cv2.getTextSize(msg1, font, 1.2, 2)
+            (w2, h2), _ = cv2.getTextSize(msg2, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            cv2.putText(frame, msg1, ((w - w1) // 2, h // 2 - 10),
+                        font, 1.2, (200, 200, 200), 2, cv2.LINE_AA)
+            cv2.putText(frame, msg2, ((w - w2) // 2, h // 2 + 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (140, 140, 140), 2, cv2.LINE_AA)
+
+        else:
+            # ACTIVE — 상단 세션 배지
+            badge_text = "SESSION ACTIVE"
+            cv2.putText(frame, badge_text, (w // 2 - 90, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (60, 220, 80), 2, cv2.LINE_AA)
+
+            # 타임아웃 진행 바 (코가 안 보일 때만 줄어듦)
+            if progress < 1.0:
+                bar_w = 200
+                bx = w // 2 - bar_w // 2
+                by = 36
+                cv2.rectangle(frame, (bx, by), (bx + bar_w, by + 6), (40, 40, 40), -1)
+                filled = int(bar_w * progress)
+                bar_color = (0, 200, 80) if progress > 0.4 else (0, 80, 220)
+                if filled > 0:
+                    cv2.rectangle(frame, (bx, by), (bx + filled, by + 6), bar_color, -1)
+                cv2.rectangle(frame, (bx, by), (bx + bar_w, by + 6), (120, 120, 120), 1)
+
+        return frame
+
     # ── 유틸 ──────────────────────────────────────────────
     def _put_text(self, frame, text, pos, scale=0.7, color=(255, 255, 255), thickness=2):
         font = cv2.FONT_HERSHEY_SIMPLEX
