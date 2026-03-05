@@ -45,14 +45,16 @@ def main():
     # 제스처별 HP 변화량
     DAMAGE = {
         "punch":      -10.0,   # 조각상 주먹질 → -10
-        "kick":       -5.0,    # 꽃 발길질 → -5
-        "both_hands":  0.0,    # 분수대 손 펼기 → 변화 없음 (customize 가능)
+        "kick":        -5.0,   # 꽃 발길질 → -5
+        "both_hands":   0.0,   # 분수대 손 펼기 → 변화 없음
+        "meditate":    +8.0,   # 명상 → 전체 +8 (tick당)
     }
-    # 제스처병 클리화 목표에셋 id
+    # 제스처별 대상 에셋 id ("__all__" = 전체 회복)
     TARGET_ASSET = {
         "punch":      "statue",
         "kick":       "flowers",
         "both_hands": "fountain",
+        "meditate":   "__all__",
     }
 
     print("\n[Main] 시작! 단축키: [R] 녹화  [S] 저장  [Q] 종료\n")
@@ -85,21 +87,35 @@ def main():
             # 에셋 근접 감지
             active_assets = check_landmarks(norm_landmarks)
 
-            # 제스처 감지 → 피드백 + HP 감소
+            # 제스처 감지 → 피드백 + HP 변화
             now = time.time()
+            HEAL_ALL = "__all__"   # 전체 회복 신호
             for gid in detector.update(norm_landmarks, hand_info):
                 g = GESTURES[gid]
-                feedbacks.append({
-                    "label":        g["label"],
-                    "color":        g["color"],
-                    "triggered_at": now,
-                })
-                # 에셋 HP 감소
+
+                # 기존 피드백은 meditate 중복 방지 (이미 'HEALING...' 중이면 갱신만)
+                existing = [fb for fb in feedbacks if fb["label"] == g["label"]]
+                if existing:
+                    existing[0]["triggered_at"] = now  # 시간만 갱신
+                else:
+                    feedbacks.append({
+                        "label":        g["label"],
+                        "color":        g["color"],
+                        "triggered_at": now,
+                    })
+
+                # ── HP 변화 ──────────────────────────────────
                 target = TARGET_ASSET.get(gid)
                 dmg    = DAMAGE.get(gid, 0.0)
-                if target and dmg != 0.0:
+
+                if target == HEAL_ALL:
+                    # 모든 에셋 회복
+                    for k in asset_values:
+                        asset_values[k] = min(MAX_HP, asset_values[k] + abs(dmg))
+                    print(f"[Gesture] {gid} → {g['label']}  | All healed +{abs(dmg):.0f}")
+                elif target and dmg != 0.0:
                     asset_values[target] = max(0.0, min(MAX_HP, asset_values[target] + dmg))
-                print(f"[Gesture] {gid} → {g['label']}  |  {target}: {asset_values.get(target, '-'):.0f} HP")
+                    print(f"[Gesture] {gid} → {g['label']}  |  {target}: {asset_values[target]:.0f} HP")
 
             # 만료 피드백 제거
             feedbacks = [fb for fb in feedbacks
