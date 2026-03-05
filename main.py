@@ -63,6 +63,7 @@ def main():
             if not success or frame is None:
                 print("[Main] 프레임 읽기 실패, 재시도 중...")
                 continue
+            frame = cv2.flip(frame, 1)   # 좌우 반전 (거울 모드)
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
