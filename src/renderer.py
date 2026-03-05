@@ -179,9 +179,156 @@ class Renderer:
 
         return frame
 
+    # ── 손 관절 시각화 ─────────────────────────────────────
+    def draw_hand_landmarks(self, frame: np.ndarray, hand_info: dict | None) -> np.ndarray:
+        """
+        손 21개 관절과 연결선을 화면에 그립니다.
+        hand_info: {"Left": {"landmarks": [(nx,ny)×21], "fist": bool, ...} | None, ...}
+        """
+        if not hand_info:
+            return frame
+        h, w = frame.shape[:2]
+
+        # MediaPipe 손 연결선 정의
+        connections = [
+            # 손바닥
+            (0,1),(1,2),(2,3),(3,4),           # 엄지
+            (0,5),(5,6),(6,7),(7,8),            # 검지
+            (0,9),(9,10),(10,11),(11,12),       # 중지
+            (0,13),(13,14),(14,15),(15,16),     # 약지
+            (0,17),(17,18),(18,19),(19,20),     # 새끼
+            (5,9),(9,13),(13,17),               # 손바닥 가로
+        ]
+
+        for side, info in hand_info.items():
+            if info is None or "landmarks" not in info:
+                continue
+
+            lms = info["landmarks"]  # [(nx, ny) × 21]
+
+            # 주먹=빨강, 열린손=초록, 중간=cyan
+            if info.get("fist"):
+                joint_color = (60, 60, 255)
+                line_color  = (0,  0, 180)
+            elif info.get("open"):
+                joint_color = (60, 220, 80)
+                line_color  = (0, 160, 40)
+            else:
+                joint_color = (220, 200, 0)
+                line_color  = (140, 120, 0)
+
+            # 연결선
+            for a, b in connections:
+                if a < len(lms) and b < len(lms):
+                    p1 = (int(lms[a][0] * w), int(lms[a][1] * h))
+                    p2 = (int(lms[b][0] * w), int(lms[b][1] * h))
+                    cv2.line(frame, p1, p2, line_color, 2, cv2.LINE_AA)
+
+            # 관절 점
+            for i, (nx, ny) in enumerate(lms):
+                pt = (int(nx * w), int(ny * h))
+                radius = 5 if i == 0 else 3   # 손목은 조금 크게
+                cv2.circle(frame, pt, radius, joint_color, -1, cv2.LINE_AA)
+
+        return frame
+
+    # ── 손 상태 표시 ──────────────────────────────────────
+    def draw_hand_status(self, frame: np.ndarray, hand_info: dict | None) -> np.ndarray:
+        """
+        화면 우측 상단에 양손의 주먹/손바닥 상태를 표시합니다.
+        hand_info: {"Left": {"fist": bool, "open": bool} | None, "Right": ...}
+        """
+        if not hand_info:
+            return frame
+        _, w = frame.shape[:2]
+        y = 32
+        for side, label_prefix in [("Right", "R"), ("Left", "L")]:
+            info = hand_info.get(side)
+            if info is None:
+                text  = f"{label_prefix}: --"
+                color = (100, 100, 100)
+            elif info.get("fist"):
+                text  = f"{label_prefix}: FIST"
+                color = (0, 80, 255)    # 빨강
+            elif info.get("open"):
+                text  = f"{label_prefix}: OPEN"
+                color = (80, 220, 80)   # 초록
+            else:
+                text  = f"{label_prefix}: ..."
+                color = (180, 180, 180)
+            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            self._put_text(frame, text, (w - tw - 12, y), scale=0.7, color=color)
+            y += 30
+        return frame
+
+    # ── 에셋 값(HP 바) 표시 ────────────────────────────────
+    def draw_asset_values(
+        self,
+        frame: np.ndarray,
+        values: dict[str, float],
+        max_value: float = 100.0,
+    ) -> np.ndarray:
+        """
+        각 에셋 옆에 현재 값을 HP 바로 표시합니다.
+
+        Args:
+            values:    {"statue": 80.0, "fountain": 100.0, "flowers": 60.0, ...}
+            max_value: 최대값 (기본 100)
+        """
+        h, w = frame.shape[:2]
+        BAR_W, BAR_H = 120, 12
+        PAD = 6
+
+        for asset in ASSETS:
+            val = values.get(asset.id, max_value)
+            ratio = max(0.0, min(1.0, val / max_value))
+
+            # 에셋 위치 기반으로 바 위치 결정
+            if isinstance(asset, PointAsset):
+                cx = int(asset.x * w)
+                cy = int(asset.y * h)
+                r  = int(asset.radius * min(w, h))
+                bx = cx - BAR_W // 2
+                by = cy + r + 8
+            elif isinstance(asset, LineAsset):
+                bx = int(asset.x_start * w) + 8
+                by = int(asset.y * h) + int(asset.band / 2 * h) + 8
+            else:
+                continue
+
+            # 배경 바
+            cv2.rectangle(frame, (bx, by), (bx + BAR_W, by + BAR_H),
+                          (40, 40, 40), -1)
+
+            # 값에 따라 색상 변화: 초록 → 노랑 → 빨강
+            if ratio > 0.6:
+                bar_color = (0, 200, 80)
+            elif ratio > 0.3:
+                bar_color = (0, 180, 220)
+            else:
+                bar_color = (0, 60, 230)
+
+            filled_w = int(BAR_W * ratio)
+            if filled_w > 0:
+                cv2.rectangle(frame, (bx, by), (bx + filled_w, by + BAR_H),
+                              bar_color, -1)
+
+            # 테두리
+            cv2.rectangle(frame, (bx, by), (bx + BAR_W, by + BAR_H),
+                          (180, 180, 180), 1)
+
+            # 숫자 표시
+            label = f"{int(val)}/{int(max_value)}"
+            if val <= 0:
+                label = "DESTROYED!"
+            self._put_text(frame, label,
+                           (bx, by - PAD),
+                           scale=0.45, color=bar_color)
+
+        return frame
+
     # ── 유틸 ──────────────────────────────────────────────
     def _put_text(self, frame, text, pos, scale=0.7, color=(255, 255, 255), thickness=2):
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(frame, text, (pos[0]+1, pos[1]+1), font, scale, self.SHADOW_COLOR, thickness+1, cv2.LINE_AA)
         cv2.putText(frame, text, pos,                  font, scale, color,             thickness,   cv2.LINE_AA)
-
