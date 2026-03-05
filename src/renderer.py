@@ -30,6 +30,22 @@ class Renderer:
             cv2.circle(frame, (int(lm["x"]), int(lm["y"])), 4, self.JOINT_COLOR, -1, cv2.LINE_AA)
         return frame
 
+    def draw_skeleton_norm(self, frame: np.ndarray, norm_lms: list[dict] | None) -> np.ndarray:
+        """정규화 좌표(nx, ny)를 frame 크기로 스케일링해서 스켈레톤을 그립니다."""
+        if not norm_lms:
+            return frame
+        h, w = frame.shape[:2]
+        for s, e in POSE_CONNECTIONS:
+            if s < len(norm_lms) and e < len(norm_lms):
+                p1 = (int(norm_lms[s]["nx"] * w), int(norm_lms[s]["ny"] * h))
+                p2 = (int(norm_lms[e]["nx"] * w), int(norm_lms[e]["ny"] * h))
+                cv2.line(frame, p1, p2, self.SKELETON_COLOR, 3, cv2.LINE_AA)
+        for lm in norm_lms:
+            pt = (int(lm["nx"] * w), int(lm["ny"] * h))
+            cv2.circle(frame, pt, 6, self.JOINT_COLOR, -1, cv2.LINE_AA)
+        return frame
+
+
     # ── 에셋 오버레이 ──────────────────────────────────────
     def draw_assets(
         self,
