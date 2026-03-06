@@ -228,12 +228,13 @@ class GestureDetector:
         return self._lm(old_frame, idx) if old_frame else None
 
     def _displacement(self, idx: int) -> float:
-        """총 이동 거리 (방향 무관)."""
+        """총 이동 거리 (방향 무관, Z축 포함)."""
         old = self._oldest(idx)
         cur = self._lm(list(self._buf)[-1], idx)
         if not old or not cur:
             return 0.0
-        return ((cur["nx"] - old["nx"]) ** 2 + (cur["ny"] - old["ny"]) ** 2) ** 0.5
+        dz = (cur.get("nz", 0.0) - old.get("nz", 0.0)) * 3.0  # Z는 스케일이 작으므로 가중치 부여
+        return ((cur["nx"] - old["nx"]) ** 2 + (cur["ny"] - old["ny"]) ** 2 + dz ** 2) ** 0.5
 
     def _downward_displacement(self, idx: int) -> float:
         """아래 방향(y 증가) 변위만 반환. 위로 올라간 경우 0."""

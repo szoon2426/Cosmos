@@ -11,13 +11,24 @@ class WebcamCapture:
         self.cap = None
 
     def open(self):
-        """웹캠을 열고 해상도를 설정합니다."""
+        """웹캠을 열고 해상도 및 안정화 속성을 설정합니다."""
+        # 기본 백엔드로 시도하되 버퍼를 최소화하여 지연 및 끊김 방지
         self.cap = cv2.VideoCapture(self.camera_index)
         if not self.cap.isOpened():
             raise RuntimeError(f"카메라 {self.camera_index}번을 열 수 없습니다.")
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        print(f"[Capture] 카메라 {self.camera_index}번 열기 성공 ({self.width}x{self.height})")
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        real_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        real_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        print(f"[Capture] 카메라 {self.camera_index}번 연결 성공 (실제해상도: {real_w}x{real_h})")
+
+    def is_opened(self) -> bool:
+        """카메라가 현재 열려있는지 확인합니다."""
+        return self.cap is not None and self.cap.isOpened()
 
     def read(self):
         """

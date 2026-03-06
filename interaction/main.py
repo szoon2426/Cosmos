@@ -80,12 +80,47 @@ def main():
 
     print("\n[Main] 시작! 단축키: [T] 세션시작/종료  [Q] 종료\n")
 
+    consecutive_failures = 0
+    MAX_FAILURES = 30  # 약 1초 동안 프레임 안 들어오면 카메라 연결 끊김으로 간주
+
     try:
         while True:
+            # 1) 카메라 객체가 아예 끊어졌을 때 복구
+            if not capture.is_opened():
+                print("\n[Main] ⚠️ 카메라 연결 유실 감지! 재연결을 시도합니다...")
+                capture.release()
+                time.sleep(1.0)
+                try:
+                    capture.open()
+                except Exception as e:
+                    print(f"[Main] ❌ 카메라 재연결 실패: {e}")
+                    time.sleep(1.0)
+                continue
+
+            # 2) 프레임 읽기 시도
             success, frame = capture.read()
             if not success or frame is None:
-                print("[Main] 프레임 읽기 실패, 재시도 중...")
+                consecutive_failures += 1
+                if consecutive_failures % 10 == 0:
+                    print(f"[Main] ⚠️ 프레임 읽기 실패 연속 ({consecutive_failures}/{MAX_FAILURES})")
+                
+                # 3) 연속 실패 임계치 도달 -> 내부적으로 카메라가 뻗었다고 간주하고 강제 리셋
+                if consecutive_failures >= MAX_FAILURES:
+                    print("\n[Main] 🚨 카메라 프레임 응답 없음! 강제로 카메라를 재시작합니다.")
+                    capture.release()
+                    time.sleep(1.5)  # 윈도우 OS가 디바이스 자원을 회수할 시간 부여
+                    try:
+                        capture.open()
+                        consecutive_failures = 0  # 성공적으로 열렸으면 카운트 초기화
+                        print("[Main] ✅ 카메라 재시작 성공!")
+                    except Exception as e:
+                        print(f"[Main] ❌ 카메라 강제 재시작 실패: {e}")
+                        consecutive_failures = 0 # 터지지 않게 일단 넘김
                 continue
+            
+            # 성공적으로 읽었으면 초기화
+            consecutive_failures = 0
+            
             frame = cv2.flip(frame, 1)
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -103,7 +138,7 @@ def main():
             norm_landmarks = None
             if landmarks:
                 norm_landmarks = [
-                    {**lm, "nx": lm["x"] / w, "ny": lm["y"] / h}
+                    {**lm, "nx": lm["x"] / w, "ny": lm["y"] / h, "nz": lm["z"]}
                     for lm in landmarks
                 ]
 
