@@ -67,25 +67,16 @@ def main():
     feedbacks: list[dict] = []
     FEEDBACK_TTL = 1.8
 
-    MAX_HP = 100.0
-    asset_values: dict[str, float] = {
-        "statue":   MAX_HP,
-        "fountain": MAX_HP,
-        "flowers":  MAX_HP,
+    # ── 전역 VAD 상태 (중립: 0.0, 범위: -1.0 ~ +1.0) ──────
+    vad: dict[str, float] = {"V": 0.0, "A": 0.0, "D": 0.0}
+
+    # 제스처 발동 시 각 VAD 축에 더해지는 델타값
+    VAD_DELTA: dict[str, dict[str, float]] = {
+        "punch":      {"D": -0.1},                         # 조각상 → Dominance 감소
+        "both_hands": {"A": -0.1, "V": -0.1},             # 분수대 → Arousal + Valence 감소
+        "kick":       {"V": -0.1},                         # 나무/꽃 → Valence 감소
+        "meditate":   {"V": +0.1, "A": +0.1, "D": +0.1}, # 명상   → 전체 회복
     }
-    DAMAGE = {
-        "punch":      -10.0,
-        "kick":        -5.0,
-        "both_hands":   0.0,
-        "meditate":    +8.0,
-    }
-    TARGET_ASSET = {
-        "punch":      "statue",
-        "kick":       "flowers",
-        "both_hands": "fountain",
-        "meditate":   "__all__",
-    }
-    HEAL_ALL = "__all__"
 
     print("\n[Main] 시작! 단축키: [T] 세션시작/종료  [Q] 종료\n")
 
@@ -135,15 +126,13 @@ def main():
                             "color":        g["color"],
                             "triggered_at": now,
                         })
-                    target = TARGET_ASSET.get(gid)
-                    dmg    = DAMAGE.get(gid, 0.0)
-                    if target == HEAL_ALL:
-                        for k in asset_values:
-                            asset_values[k] = min(MAX_HP, asset_values[k] + abs(dmg))
-                        print(f"[Gesture] {gid} → {g['label']}  | All +{abs(dmg):.0f} HP")
-                    elif target and dmg != 0.0:
-                        asset_values[target] = max(0.0, min(MAX_HP, asset_values[target] + dmg))
-                        print(f"[Gesture] {gid} → {g['label']}  |  {target}: {asset_values[target]:.0f} HP")
+                    # VAD 값 갱신
+                    delta = VAD_DELTA.get(gid, {})
+                    for axis, change in delta.items():
+                        vad[axis] = max(-1.0, min(1.0, vad[axis] + change))
+                    if delta:
+                        vad_str = "  ".join(f"{k}:{vad[k]:+.2f}" for k in ("V", "A", "D"))
+                        print(f"[Gesture] {gid} → {g['label']}  | {vad_str}")
             else:
                 detector.update(None, None)
 
@@ -156,9 +145,9 @@ def main():
             # ── 창 2: design.png 위에 오버레이 ──────────────
             design_frame = design_base.copy()
 
-            # 에셋 영역 + HP 바
+            # 에셋 영역 + VAD 바
             design_frame = renderer.draw_assets(design_frame, active_assets)
-            design_frame = renderer.draw_asset_values(design_frame, asset_values, MAX_HP)
+            design_frame = renderer.draw_vad_bars(design_frame, vad)
 
             # 세션 활성 시: 스켈레톤 + 손 관절 (정규화 좌표로 design 크기에 맞춤)
             if session.is_active and active_lms is not None:

@@ -277,69 +277,91 @@ class Renderer:
             y += 30
         return frame
 
-    # ── 에셋 값(HP 바) 표시 ────────────────────────────────
-    def draw_asset_values(
+    # ── VAD 바 표시 ────────────────────────────────────────
+    def draw_vad_bars(
         self,
         frame: np.ndarray,
-        values: dict[str, float],
-        max_value: float = 100.0,
+        vad: dict[str, float],
     ) -> np.ndarray:
         """
-        각 에셋 옆에 현재 값을 HP 바로 표시합니다.
+        전역 VAD 상태를 화면 좌측 하단에 바로 시각화합니다.
 
         Args:
-            values:    {"statue": 80.0, "fountain": 100.0, "flowers": 60.0, ...}
-            max_value: 최대값 (기본 100)
+            vad: {"V": float, "A": float, "D": float}  각각 -1.0 ~ +1.0
         """
         h, w = frame.shape[:2]
-        BAR_W, BAR_H = 120, 12
-        PAD = 6
 
-        for asset in ASSETS:
-            val = values.get(asset.id, max_value)
-            ratio = max(0.0, min(1.0, val / max_value))
+        BAR_W    = 180   # 전체 바 너비 (중앙=0, 좌=음수, 우=양수)
+        BAR_H    = 16    # 바 높이
+        GAP      = 10    # 바 사이 간격
+        MARGIN_X = 20
+        MARGIN_Y = 20
+        LABEL_W  = 28   # 레이블 영역 너비
 
-            # 에셋 위치 기반으로 바 위치 결정
-            if isinstance(asset, PointAsset):
-                cx = int(asset.x * w)
-                cy = int(asset.y * h)
-                r  = int(asset.radius * min(w, h))
-                bx = cx - BAR_W // 2
-                by = cy + r + 8
-            elif isinstance(asset, LineAsset):
-                bx = int(asset.x_start * w) + 8
-                by = int(asset.y * h) + int(asset.band / 2 * h) + 8
-            else:
-                continue
+        axes = [
+            ("V", (60,  200, 80),   (60,  60, 230)),   # 양수=초록, 음수=빨강
+            ("A", (200, 160, 40),   (60,  60, 230)),   # 양수=노랑, 음수=빨강
+            ("D", (200, 100, 255),  (60,  60, 230)),   # 양수=보라, 음수=빨강
+        ]
 
-            # 배경 바
+        total_h = len(axes) * (BAR_H + GAP) - GAP
+        base_x  = MARGIN_X
+        base_y  = h - MARGIN_Y - total_h
+
+        # 반투명 배경 패널
+        panel_pad = 12
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay,
+            (base_x - panel_pad, base_y - panel_pad - 22),
+            (base_x + LABEL_W + BAR_W + panel_pad, base_y + total_h + panel_pad),
+            (15, 15, 15), -1,
+        )
+        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+
+        # 제목
+        self._put_text(frame, "VAD STATE",
+                       (base_x, base_y - panel_pad - 4),
+                       scale=0.5, color=(200, 200, 200), thickness=1)
+
+        for i, (key, pos_color, neg_color) in enumerate(axes):
+            val = max(-1.0, min(1.0, vad.get(key, 0.0)))
+
+            by  = base_y + i * (BAR_H + GAP)
+            bx  = base_x + LABEL_W       # 바 시작 x
+            mid = bx + BAR_W // 2        # 0 기준선 x
+
+            # 배경 바 (전체)
             cv2.rectangle(frame, (bx, by), (bx + BAR_W, by + BAR_H),
-                          (40, 40, 40), -1)
+                          (35, 35, 35), -1)
 
-            # 값에 따라 색상 변화: 초록 → 노랑 → 빨강
-            if ratio > 0.6:
-                bar_color = (0, 200, 80)
-            elif ratio > 0.3:
-                bar_color = (0, 180, 220)
-            else:
-                bar_color = (0, 60, 230)
+            # 채움 (중앙 기준 좌우)
+            fill_px = int(abs(val) * (BAR_W // 2))
+            if val > 0:
+                cv2.rectangle(frame, (mid, by), (mid + fill_px, by + BAR_H),
+                              pos_color, -1)
+            elif val < 0:
+                cv2.rectangle(frame, (mid - fill_px, by), (mid, by + BAR_H),
+                              neg_color, -1)
 
-            filled_w = int(BAR_W * ratio)
-            if filled_w > 0:
-                cv2.rectangle(frame, (bx, by), (bx + filled_w, by + BAR_H),
-                              bar_color, -1)
+            # 중앙선 (0 기준)
+            cv2.line(frame, (mid, by - 2), (mid, by + BAR_H + 2),
+                     (180, 180, 180), 1, cv2.LINE_AA)
 
             # 테두리
             cv2.rectangle(frame, (bx, by), (bx + BAR_W, by + BAR_H),
-                          (180, 180, 180), 1)
+                          (100, 100, 100), 1)
 
-            # 숫자 표시
-            label = f"{int(val)}/{int(max_value)}"
-            if val <= 0:
-                label = "DESTROYED!"
-            self._put_text(frame, label,
-                           (bx, by - PAD),
-                           scale=0.45, color=bar_color)
+            # 레이블 + 수치
+            bar_color = pos_color if val >= 0 else neg_color
+            self._put_text(frame, key,
+                           (base_x, by + BAR_H - 2),
+                           scale=0.55, color=(220, 220, 220), thickness=1)
+            val_text = f"{val:+.2f}"
+            (tw, _), _ = cv2.getTextSize(val_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            self._put_text(frame, val_text,
+                           (bx + BAR_W - tw - 4, by + BAR_H - 3),
+                           scale=0.45, color=bar_color, thickness=1)
 
         return frame
 

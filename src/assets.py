@@ -54,27 +54,27 @@ ASSETS: list[PointAsset | LineAsset] = [
     PointAsset(
         id="statue",
         name="statue",
-        x=0.25,
-        y=0.38,
-        radius=0.10,
-        color=(80, 200, 255),   # 노란 계열
+        x=0.69,
+        y=0.48,
+        radius=0.12,
+        color=(80, 200, 255),   # 노란 계열 (우측)
     ),
     PointAsset(
         id="fountain",
         name="fountain",
-        x=0.72,
-        y=0.35,
-        radius=0.10,
-        color=(255, 200, 60),   # cyan 계열
+        x=0.40,
+        y=0.60,
+        radius=0.12,
+        color=(255, 200, 60),   # cyan 계열 (좌측)
     ),
     LineAsset(
         id="flowers",
         name="flowers",
         x_start=0.05,
         x_end=0.95,
-        y=0.88,
-        band=0.10,
-        color=(130, 80, 255),   # 분홍/보라
+        y=0.85,
+        band=0.15,
+        color=(130, 80, 255),   # 분홍/보라 (하단 전체)
     ),
 ]
 
