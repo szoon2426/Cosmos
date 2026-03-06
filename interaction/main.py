@@ -14,53 +14,31 @@ import cv2
 import numpy as np
 import time
 import os
+from datetime import datetime
 
 from src.capture import WebcamCapture
 from src.pose import PoseEstimator
 from src.hand import HandEstimator
-from src.renderer import Renderer
 from src.assets import check_landmarks
 from src.gesture import GestureDetector, GESTURES
 from src.session import SessionManager
 
-DESIGN_PATH   = "design.png"
-DESIGN_WIDTH  = 1920    # 표시용 해상도 (시작 시 한 번만 리사이즈)
-
-
-def load_design(path: str, target_w: int = DESIGN_WIDTH) -> np.ndarray:
-    """design.png 로드 후 target_w 기준으로 고품질 리사이즈."""
-    if os.path.exists(path):
-        img = cv2.imread(path)
-        if img is not None:
-            oh, ow = img.shape[:2]
-            target_h = int(oh * target_w / ow)
-            img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
-            print(f"[Design] {path} 로드 완료 ({ow}x{oh} → {target_w}x{target_h})")
-            return img
-    print(f"[Design] {path} 없음 — 기본 배경 생성")
-    return np.zeros((720, 1280, 3), dtype=np.uint8)
-
-
 def main():
-    # design.png 한 번만 로드
-    design_base = load_design(DESIGN_PATH)
-    dh, dw = design_base.shape[:2]
-
     capture   = WebcamCapture(camera_index=0, width=1280, height=720)
     estimator = PoseEstimator()
     hand_est  = HandEstimator()
-    renderer  = Renderer()
     detector  = GestureDetector()
     session   = SessionManager()
 
     capture.open()
 
-    # 창 생성
-    cv2.namedWindow("Camera",      cv2.WINDOW_NORMAL)
-    cv2.namedWindow("Design View", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Camera",      640, 360)
-    cv2.resizeWindow("Design View", dw, dh)   # design.png 실제 크기로 표시
-
+    # 비디오 녹화기 설정
+    os.makedirs("recordings", exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    video_path = f"recordings/camera_log_{ts}.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # mp4 코덱
+    out_video = cv2.VideoWriter(video_path, fourcc, 30.0, (1280, 720))
+    print(f"[Main] 🎥 백그라운드 비디오 녹화 시작 -> {video_path}")
 
     frame_index = 0
     hand_info: dict = {}
@@ -78,7 +56,7 @@ def main():
         "meditate":   {"V": +0.1, "A": +0.1, "D": +0.1}, # 명상   → 전체 회복
     }
 
-    print("\n[Main] 시작! 단축키: [T] 세션시작/종료  [Q] 종료\n")
+    print("\n[Main] 시스템 구동 완료! (종료하려면 터미널에서 Ctrl+C를 누르세요)\n")
 
     consecutive_failures = 0
     MAX_FAILURES = 30  # 약 1초 동안 프레임 안 들어오면 카메라 연결 끊김으로 간주
@@ -142,7 +120,11 @@ def main():
                     for lm in landmarks
                 ]
 
-            # 세션 관리
+            # 세션 관리 (자동 시작)
+            if not session.is_active and norm_landmarks is not None:
+                print("[Main] 👀 사람 감지 - 세션을 자동 시작합니다.")
+                session.start(norm_landmarks)
+            
             session_lms = session.update(norm_landmarks)
             active_lms  = session_lms if session.is_active else None
 
@@ -174,51 +156,17 @@ def main():
             feedbacks = [fb for fb in feedbacks
                          if now - fb["triggered_at"] <= FEEDBACK_TTL]
 
-            # ── 창 1: 카메라 피드 (클린) ────────────────────
-            cv2.imshow("Camera", frame)
-
-            # ── 창 2: design.png 위에 오버레이 ──────────────
-            design_frame = design_base.copy()
-
-            # 에셋 영역 + VAD 바
-            design_frame = renderer.draw_assets(design_frame, active_assets)
-            design_frame = renderer.draw_vad_bars(design_frame, vad)
-
-            # 세션 활성 시: 스켈레톤 + 손 관절 (정규화 좌표로 design 크기에 맞춤)
-            if session.is_active and active_lms is not None:
-                design_frame = renderer.draw_skeleton_norm(design_frame, active_lms)
-                # 손 랜드마크도 정규화 좌표 기반으로 design 프레임에 그리기
-                design_frame = renderer.draw_hand_landmarks(design_frame, hand_info)
-                design_frame = renderer.draw_hand_status(design_frame, hand_info)
-
-            # 피드백 + 세션 상태
-            design_frame = renderer.draw_feedback(design_frame, feedbacks)
-            design_frame = renderer.draw_session_state(
-                design_frame, session.is_active, session.progress()
-            )
-            design_frame = renderer.draw_hud(
-                design_frame,
-                is_recording=False,
-                frame_count=0,
-                detected=active_lms is not None,
-            )
-
-            cv2.imshow("Design View", design_frame)
+            # ── 화면 출력 대신 백그라운드 녹화 수행 ────────────────────
+            out_video.write(frame)
 
             frame_index += 1
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                print("[Main] 종료합니다.")
-                break
-            elif key == ord("t"):
-                if session.is_active:
-                    session.end()
-                else:
-                    session.start(norm_landmarks)
-
+    except KeyboardInterrupt:
+        print("\n[Main] 터미널 인터럽트(Ctrl+C) 감지. 종료 절차를 시작합니다.")
     finally:
         capture.release()
+        if 'out_video' in locals():
+            out_video.release()
         estimator.close()
         hand_est.close()
         cv2.destroyAllWindows()
