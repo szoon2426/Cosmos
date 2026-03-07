@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import time
 import os
+import os
+import msvcrt
 from datetime import datetime
 
 from src.capture import WebcamCapture
@@ -22,6 +24,8 @@ from src.hand import HandEstimator
 from src.assets import check_landmarks
 from src.gesture import GestureDetector, GESTURES
 from src.session import SessionManager
+from src.vad_mapper import map_vad_to_assets
+from src.ue_bridge import UEBridge
 
 def main():
     capture   = WebcamCapture(camera_index=0, width=1280, height=720)
@@ -29,6 +33,10 @@ def main():
     hand_est  = HandEstimator()
     detector  = GestureDetector()
     session   = SessionManager()
+
+    # ── 언리얼 엔진 WebSocket 브릿지 ──────────────────────────
+    ue_bridge = UEBridge()
+    ue_bridge.start()
 
     capture.open()
 
@@ -150,11 +158,29 @@ def main():
                     if delta:
                         vad_str = "  ".join(f"{k}:{vad[k]:+.2f}" for k in ("V", "A", "D"))
                         print(f"[Gesture] {gid} → {g['label']}  | {vad_str}")
+                        # VAD 변화 시 에셋 파라미터 계산 후 언리얼로 전송
+                        asset_params = map_vad_to_assets(vad)
+                        ue_bridge.send(asset_params)
+                        print(f"[UEBridge] 전송 → {asset_params}")
             else:
                 detector.update(None, None)
 
             feedbacks = [fb for fb in feedbacks
                          if now - fb["triggered_at"] <= FEEDBACK_TTL]
+
+            # ── 터미널 키보드 입력 처리 (MSVCRT) ──────────────────
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+                # [+] 또는 [=] 키
+                if key in (b'+', b'='):
+                    vad["A"] = min(1.0, vad["A"] + 0.1)
+                    print(f"[Keyboard] A(Arousal) 증가 -> {vad['A']:.2f}")
+                    ue_bridge.send(map_vad_to_assets(vad))
+                # [-] 키
+                elif key == b'-':
+                    vad["A"] = max(-1.0, vad["A"] - 0.1)
+                    print(f"[Keyboard] A(Arousal) 감소 -> {vad['A']:.2f}")
+                    ue_bridge.send(map_vad_to_assets(vad))
 
             # ── 화면 출력 대신 백그라운드 녹화 수행 ────────────────────
             out_video.write(frame)
@@ -169,6 +195,7 @@ def main():
             out_video.release()
         estimator.close()
         hand_est.close()
+        ue_bridge.stop()
         cv2.destroyAllWindows()
         print("[Main] 정리 완료.")
 
