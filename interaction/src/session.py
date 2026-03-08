@@ -35,12 +35,17 @@ class SessionManager:
 
     def start(self, norm_lms: list[dict] | None):
         """T키 입력 시 호출. 현재 감지된 코 위치로 세션 시작."""
-        nose = self._get_nose(norm_lms)
-        if nose is None:
-            print("[Session] 코(얼굴)가 감지되지 않아 세션 시작 불가")
-            return
-        self._locked_nx = nose[0]
-        self._locked_ny = nose[1]
+        # nose = self._get_nose(norm_lms)
+        # if nose is None:
+        #     print("[Session] 코(얼굴)가 감지되지 않아 세션 시작 불가")
+        #     return
+        # self._locked_nx = nose[0]
+        # self._locked_ny = nose[1]
+        
+        # --- DUMMY CAMERA MODE ---
+        self._locked_nx = 0.5
+        self._locked_ny = 0.5
+        
         self._last_seen = time.time()
         self._active    = True
         print(f"[Session] 세션 시작 — 코 위치 잠금 ({self._locked_nx:.2f}, {self._locked_ny:.2f})")
@@ -66,25 +71,31 @@ class SessionManager:
             return None
 
         now  = time.time()
-        nose = self._get_nose(norm_lms)
+        # nose = self._get_nose(norm_lms)
 
-        if nose is None:
-            # 코가 안 보임 — 타임아웃 체크
-            if self._last_seen and now - self._last_seen >= self.IDLE_TIMEOUT:
-                print(f"[Session] 코 미감지 {self.IDLE_TIMEOUT:.0f}초 초과 → 세션 종료")
-                self.end()
-            return None
+        # if nose is None:
+        #     # 코가 안 보임 — 타임아웃 체크
+        #     if self._last_seen and now - self._last_seen >= self.IDLE_TIMEOUT:
+        #         print(f"[Session] 코 미감지 {self.IDLE_TIMEOUT:.0f}초 초과 → 세션 종료")
+        #         self.end()
+        #     return None
 
-        # 코 위치가 잠금 위치에서 너무 멀면 다른 사람으로 판단
-        dist = ((nose[0] - self._locked_nx) ** 2 + (nose[1] - self._locked_ny) ** 2) ** 0.5
-        if dist > self.LOCK_RADIUS:
-            # 이 프레임의 랜드마크 무시 (잠금 위치 유지)
-            return None
+        # # 코 위치가 잠금 위치에서 너무 멀면 다른 사람으로 판단
+        # dist = ((nose[0] - self._locked_nx) ** 2 + (nose[1] - self._locked_ny) ** 2) ** 0.5
+        # if dist > self.LOCK_RADIUS:
+        #     # 이 프레임의 랜드마크 무시 (잠금 위치 유지)
+        #     return None
 
-        # 동일 인물 → 잠금 위치 부드럽게 업데이트 (이동 허용)
-        self._locked_nx = (1 - self.SMOOTH) * self._locked_nx + self.SMOOTH * nose[0]
-        self._locked_ny = (1 - self.SMOOTH) * self._locked_ny + self.SMOOTH * nose[1]
+        # # 동일 인물 → 잠금 위치 부드럽게 업데이트 (이동 허용)
+        # self._locked_nx = (1 - self.SMOOTH) * self._locked_nx + self.SMOOTH * nose[0]
+        # self._locked_ny = (1 - self.SMOOTH) * self._locked_ny + self.SMOOTH * nose[1]
+        
+        # --- DUMMY CAMERA MODE ---
         self._last_seen = now
+
+        # 강제로 빈 랜드마크라도 리턴하여 세션 정보를 유지하게 함 (main의 check_landmarks 등 에러 방지)
+        if norm_lms is None:
+             norm_lms = [{"x": 0.5, "y": 0.5, "z": 0.0, "nx": 0.5, "ny": 0.5, "nz": 0.0} for _ in range(33)]
 
         return norm_lms
 

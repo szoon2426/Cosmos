@@ -29,8 +29,8 @@ from src.ue_bridge import UEBridge
 
 def main():
     capture   = WebcamCapture(camera_index=0, width=1280, height=720)
-    estimator = PoseEstimator()
-    hand_est  = HandEstimator()
+    # estimator = PoseEstimator()
+    # hand_est  = HandEstimator()
     detector  = GestureDetector()
     session   = SessionManager()
 
@@ -38,7 +38,7 @@ def main():
     ue_bridge = UEBridge()
     ue_bridge.start()
 
-    capture.open()
+    # capture.open()
 
     # 비디오 녹화기 설정
     os.makedirs("recordings", exist_ok=True)
@@ -71,54 +71,67 @@ def main():
 
     try:
         while True:
-            # 1) 카메라 객체가 아예 끊어졌을 때 복구
-            if not capture.is_opened():
-                print("\n[Main] ⚠️ 카메라 연결 유실 감지! 재연결을 시도합니다...")
-                capture.release()
-                time.sleep(1.0)
-                try:
-                    capture.open()
-                except Exception as e:
-                    print(f"[Main] ❌ 카메라 재연결 실패: {e}")
-                    time.sleep(1.0)
-                continue
+            # # 1) 카메라 객체가 아예 끊어졌을 때 복구
+            # if not capture.is_opened():
+            #     print("\n[Main] ⚠️ 카메라 연결 유실 감지! 재연결을 시도합니다...")
+            #     capture.release()
+            #     time.sleep(1.0)
+            #     try:
+            #         capture.open()
+            #     except Exception as e:
+            #         print(f"[Main] ❌ 카메라 재연결 실패: {e}")
+            #         time.sleep(1.0)
+            #     continue
+            # 
+            # # 2) 프레임 읽기 시도
+            # success, frame = capture.read()
+            # if not success or frame is None:
+            #     consecutive_failures += 1
+            #     if consecutive_failures % 10 == 0:
+            #         print(f"[Main] ⚠️ 프레임 읽기 실패 연속 ({consecutive_failures}/{MAX_FAILURES})")
+            #     
+            #     # 3) 연속 실패 임계치 도달 -> 내부적으로 카메라가 뻗었다고 간주하고 강제 리셋
+            #     if consecutive_failures >= MAX_FAILURES:
+            #         print("\n[Main] 🚨 카메라 프레임 응답 없음! 강제로 카메라를 재시작합니다.")
+            #         capture.release()
+            #         time.sleep(1.5)  # 윈도우 OS가 디바이스 자원을 회수할 시간 부여
+            #         try:
+            #             capture.open()
+            #             consecutive_failures = 0  # 성공적으로 열렸으면 카운트 초기화
+            #             print("[Main] ✅ 카메라 재시작 성공!")
+            #         except Exception as e:
+            #             print(f"[Main] ❌ 카메라 강제 재시작 실패: {e}")
+            #             consecutive_failures = 0 # 터지지 않게 일단 넘김
+            #     continue
+            # 
+            # # 성공적으로 읽었으면 초기화
+            # consecutive_failures = 0
+            # 
+            # frame = cv2.flip(frame, 1)
+            # 
+            # frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # 
+            # # 포즈 추정
+            # pose_results = estimator.process(frame_rgb)
+            # h, w = frame.shape[:2]
+            # landmarks = estimator.get_landmarks_as_dict(pose_results, w, h)
+            # 
+            # # 손 상태 감지 (격프레임)
+            # if frame_index % 2 == 0:
+            #     hand_info = hand_est.process(frame_rgb)
 
-            # 2) 프레임 읽기 시도
-            success, frame = capture.read()
-            if not success or frame is None:
-                consecutive_failures += 1
-                if consecutive_failures % 10 == 0:
-                    print(f"[Main] ⚠️ 프레임 읽기 실패 연속 ({consecutive_failures}/{MAX_FAILURES})")
-                
-                # 3) 연속 실패 임계치 도달 -> 내부적으로 카메라가 뻗었다고 간주하고 강제 리셋
-                if consecutive_failures >= MAX_FAILURES:
-                    print("\n[Main] 🚨 카메라 프레임 응답 없음! 강제로 카메라를 재시작합니다.")
-                    capture.release()
-                    time.sleep(1.5)  # 윈도우 OS가 디바이스 자원을 회수할 시간 부여
-                    try:
-                        capture.open()
-                        consecutive_failures = 0  # 성공적으로 열렸으면 카운트 초기화
-                        print("[Main] ✅ 카메라 재시작 성공!")
-                    except Exception as e:
-                        print(f"[Main] ❌ 카메라 강제 재시작 실패: {e}")
-                        consecutive_failures = 0 # 터지지 않게 일단 넘김
-                continue
-            
-            # 성공적으로 읽었으면 초기화
-            consecutive_failures = 0
-            
-            frame = cv2.flip(frame, 1)
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # 포즈 추정
-            pose_results = estimator.process(frame_rgb)
+            # --- DUMMY CAMERA MODE ---
+            # 카메라가 없으므로 빈 프레임 및 빈 랜드마크 생성
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            cv2.putText(frame, "NO CAMERA MODE", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             h, w = frame.shape[:2]
-            landmarks = estimator.get_landmarks_as_dict(pose_results, w, h)
-
-            # 손 상태 감지 (격프레임)
+            
+            # 더미 랜드마크 생성 (세션 시작 및 유지를 위해)
+            landmarks = [{"x": w/2, "y": h/2, "z": 0.0} for _ in range(33)]
+            
             if frame_index % 2 == 0:
-                hand_info = hand_est.process(frame_rgb)
+                hand_info = {}
+            time.sleep(0.033)  # 루프 속도 조절 (약 30fps)
 
             # 정규화 랜드마크
             norm_landmarks = None
@@ -171,16 +184,31 @@ def main():
             # ── 터미널 키보드 입력 처리 (MSVCRT) ──────────────────
             if msvcrt.kbhit():
                 key = msvcrt.getch()
-                # [+] 또는 [=] 키
-                if key in (b'+', b'='):
-                    vad["A"] = min(1.0, vad["A"] + 0.1)
-                    print(f"[Keyboard] A(Arousal) 증가 -> {vad['A']:.2f}")
-                    ue_bridge.send(map_vad_to_assets(vad))
-                # [-] 키
-                elif key == b'-':
-                    vad["A"] = max(-1.0, vad["A"] - 0.1)
-                    print(f"[Keyboard] A(Arousal) 감소 -> {vad['A']:.2f}")
-                    ue_bridge.send(map_vad_to_assets(vad))
+
+                # 특수 키(화살표 등) 스캔 코드 처리 (첫 바이트가 0xe0 또는 0x00)
+                if key in (b'\xe0', b'\x00'):
+                    ext_key = msvcrt.getch()
+                    # [↑] 위 화살표: 부정적(Valence 감소) -> 부식 심해짐
+                    if ext_key == b'H':
+                        vad["V"] = max(-1.0, vad["V"] - 0.1)
+                        print(f"[Keyboard] V(Valence) 감소 -> {vad['V']:.2f} (부식 증가)")
+                        ue_bridge.send(map_vad_to_assets(vad))
+                    # [↓] 아래 화살표: 긍정적(Valence 증가) -> 부식 완화
+                    elif ext_key == b'P':
+                        vad["V"] = min(1.0, vad["V"] + 0.1)
+                        print(f"[Keyboard] V(Valence) 증가 -> {vad['V']:.2f} (부식 완화)")
+                        ue_bridge.send(map_vad_to_assets(vad))
+                else:
+                    # [+] 또는 [=] 키
+                    if key in (b'+', b'='):
+                        vad["A"] = min(1.0, vad["A"] + 0.1)
+                        print(f"[Keyboard] A(Arousal) 증가 -> {vad['A']:.2f}")
+                        ue_bridge.send(map_vad_to_assets(vad))
+                    # [-] 키
+                    elif key == b'-':
+                        vad["A"] = max(-1.0, vad["A"] - 0.1)
+                        print(f"[Keyboard] A(Arousal) 감소 -> {vad['A']:.2f}")
+                        ue_bridge.send(map_vad_to_assets(vad))
 
             # ── 화면 출력 대신 백그라운드 녹화 수행 ────────────────────
             out_video.write(frame)
@@ -190,11 +218,11 @@ def main():
     except KeyboardInterrupt:
         print("\n[Main] 터미널 인터럽트(Ctrl+C) 감지. 종료 절차를 시작합니다.")
     finally:
-        capture.release()
+        # capture.release()
         if 'out_video' in locals():
             out_video.release()
-        estimator.close()
-        hand_est.close()
+        # estimator.close()
+        # hand_est.close()
         ue_bridge.stop()
         cv2.destroyAllWindows()
         print("[Main] 정리 완료.")
