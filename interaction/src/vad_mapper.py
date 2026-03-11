@@ -7,6 +7,11 @@ VAD 범위: -1.0 ~ +1.0
   VAD = -1  →  VelocityMin=0,   VelocityMax=20
   VAD =  0  →  VelocityMin=200, VelocityMax=230
   VAD = +1  →  VelocityMin=500, VelocityMax=570
+
+꽃 (flower) 블룸 매핑:
+  V = -1.0  →  FlowerBloomAmount = -0.6  (꽃이 가장 오므라듦)
+  V =  0.0  →  FlowerBloomAmount =  0.2  (중립)
+  V = +1.0  →  FlowerBloomAmount =  1.0  (꽃이 활짝 핌)
 """
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -33,21 +38,19 @@ def _map_fountain_velocity(arousal: float) -> dict:
         "VelocitySpeedMax": round(vel_max, 2)
     }
 
-def _map_statue_decay(valence: float, arousal: float) -> dict:
+def _map_statue_decay(dominance: float, arousal: float) -> dict:
     """
-    Valence(부정적, -1에 가까움)일 때 부식이 심해짐.
-    V = -1.0 -> Decay = 1.0
-    V =  0.0 -> Decay = 0.3
-    V = +1.0 -> Decay = 0.0
+    Dominance(지배감, -1에 가까울수록 압도당함)일 때 부식이 심해짐.
+    D = -1.0 -> Decay = 1.0
+    D =  0.0 -> Decay = 0.3
+    D = +1.0 -> Decay = 0.0
     """
-    if valence < 0:
+    if dominance < 0:
         # -1.0 ~ 0.0 구간: 1.0 ~ 0.3
-        # 인자 t = -valence (음수를 양수로 변환하여 0~1 비율로 사용)
-        decay_amount = _lerp(0.3, 1.0, -valence)
+        decay_amount = _lerp(0.3, 1.0, -dominance)
     else:
         # 0.0 ~ 1.0 구간: 0.3 ~ 0.0
-        # 인자 t = valence
-        decay_amount = _lerp(0.3, 0.0, valence)
+        decay_amount = _lerp(0.3, 0.0, dominance)
         
     # Arousal(흥분도, 활력)이 추가 요인으로 결합될 때 부식을 살짝 가속 (최대 +10%)
     # 원치 않으시면 이 줄을 주석 처리하셔도 됩니다.
@@ -62,21 +65,38 @@ def _map_statue_decay(valence: float, arousal: float) -> dict:
     }
 
 
+def _map_flower_bloom(valence: float) -> dict:
+    """
+    Valence(-1~+1)를 꽃 BloomAmount(-0.6~1.0)로 선형 보간.
+
+    V = -1.0  →  FlowerBloomAmount = -0.6  (꽃 오므라듦)
+    V =  0.0  →  FlowerBloomAmount =  0.2  (중립)
+    V = +1.0  →  FlowerBloomAmount =  1.0  (꽃 활짝)
+    """
+    # valence -1~+1 를 0~1 로 정규화 후 -0.6~1.0 구간으로 선형 보간
+    t = (valence + 1.0) / 2.0          # -1→0, 0→0.5, +1→1
+    bloom = _lerp(-0.6, 1.0, t)
+    bloom = max(-0.6, min(1.0, bloom))  # 클램핑
+    return {"FlowerBloomAmount": round(bloom, 3)}
+
+
 def map_vad_to_assets(vad: dict) -> dict:
     """
     VAD 딕셔너리를 받아 에셋별 파라미터 딕셔너리를 반환.
 
     반환 형식:
     {
-        "fountain": { "VelocityMin": float, "VelocityMax": float },
-        "statue": { "DecayAmount": float },
-        ...   (향후 에셋 추가 시 여기에 추가)
+        "fountain": { "VelocitySpeedMin": float, "VelocitySpeedMax": float },
+        "statue":   { "DecayAmount": float },
+        "flower":   { "FlowerBloomAmount": float },
     }
     """
     V = vad.get("V", 0.0)
     A = vad.get("A", 0.0)
+    D = vad.get("D", 0.0)
 
     return {
         "fountain": _map_fountain_velocity(A),
-        "statue": _map_statue_decay(V, A)
+        "statue":   _map_statue_decay(D, A),
+        "flower":   _map_flower_bloom(V),
     }

@@ -15,9 +15,11 @@ UE_PORT = 30010
 # 에디터 원본(L_01) 대신 플레이 중인 런타임 월드(UEDPIE_0_L_01)를 타겟팅합니다.
 ACTOR_PATH = "/Game/Test/UEDPIE_0_L_01.L_01:PersistentLevel.NS_Fountain_Blueprint_C_0"
 STATUE_ACTOR_PATH = "/Game/Test/UEDPIE_0_L_01.L_01:PersistentLevel.NewBlueprint_C_1"
+FLOWER_ACTOR_PATH = "/Game/Test/UEDPIE_0_L_01.L_01:PersistentLevel.S_Elderberry_wfzobb2ia_Var5_lod4_Blueprint_C_0"
 
-BASE_URL = f"{UE_HOST}:{UE_PORT}"
-CALL_URL = f"{BASE_URL}/remote/object/call"
+BASE_URL  = f"{UE_HOST}:{UE_PORT}"
+CALL_URL  = f"{BASE_URL}/remote/object/call"
+SET_URL   = f"{BASE_URL}/remote/object/property"
 # ------------------------------------------------------------------------
 
 
@@ -30,19 +32,14 @@ class UEBridge:
         print(f"[UEBridge] Target: {ACTOR_PATH}")
 
     def send(self, payload: dict):
-        fountain_thread = threading.Thread(
-            target=self._send_fountain,
-            args=(payload.get("fountain", {}),),
-            daemon=True,
-        )
-        fountain_thread.start()
+        # UE Remote Control API는 동시 요청 처리에 취약하므로
+        # 하나의 쓰레드에서 순차적으로 전송합니다.
+        def _send_all():
+            self._send_fountain(payload.get("fountain", {}))
+            self._send_statue(payload.get("statue", {}))
+            self._send_flower(payload.get("flower", {}))
 
-        statue_thread = threading.Thread(
-            target=self._send_statue,
-            args=(payload.get("statue", {}),),
-            daemon=True,
-        )
-        statue_thread.start()
+        threading.Thread(target=_send_all, daemon=True).start()
 
     def stop(self):
         print("[UEBridge] Stopped")
@@ -104,3 +101,29 @@ class UEBridge:
             print("[UEBridge] Timeout (Statue)")
         except requests.exceptions.ConnectionError:
             print("[UEBridge] Connection error (Statue) - is Unreal running?")
+    def _send_flower(self, flower: dict):
+        if not flower:
+            return
+
+        bloom_amount = flower.get("FlowerBloomAmount", 0.2)
+
+        # BP 함수 SetFlowerAmount 호출 (입력핀: FlowerBloomAmount)
+        body = {
+            "objectPath": FLOWER_ACTOR_PATH,
+            "functionName": "SetFlowerAmount",
+            "parameters": {
+                "FlowerBloomAmount": bloom_amount
+            },
+            "generateTransaction": True,
+        }
+
+        try:
+            resp = requests.put(CALL_URL, json=body, timeout=0.5)
+            if resp.status_code == 200:
+                print(f"[UEBridge] OK (Flower) | FlowerBloomAmount={bloom_amount}")
+            else:
+                print(f"[UEBridge] ERR (Flower) {resp.status_code}: {resp.text[:100]}")
+        except requests.exceptions.Timeout:
+            print("[UEBridge] Timeout (Flower)")
+        except requests.exceptions.ConnectionError:
+            print("[UEBridge] Connection error (Flower) - is Unreal running?")

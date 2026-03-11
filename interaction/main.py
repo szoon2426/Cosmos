@@ -188,15 +188,25 @@ def main():
                 # 특수 키(화살표 등) 스캔 코드 처리 (첫 바이트가 0xe0 또는 0x00)
                 if key in (b'\xe0', b'\x00'):
                     ext_key = msvcrt.getch()
-                    # [↑] 위 화살표: 부정적(Valence 감소) -> 부식 심해짐
+                    # [↑] 위 화살표: Valence 증가 -> 꽃 활짝
                     if ext_key == b'H':
-                        vad["V"] = max(-1.0, vad["V"] - 0.1)
-                        print(f"[Keyboard] V(Valence) 감소 -> {vad['V']:.2f} (부식 증가)")
-                        ue_bridge.send(map_vad_to_assets(vad))
-                    # [↓] 아래 화살표: 긍정적(Valence 증가) -> 부식 완화
-                    elif ext_key == b'P':
                         vad["V"] = min(1.0, vad["V"] + 0.1)
-                        print(f"[Keyboard] V(Valence) 증가 -> {vad['V']:.2f} (부식 완화)")
+                        print(f"[Keyboard] V(Valence) 증가 -> {vad['V']:.2f} (꽃 활짝)")
+                        ue_bridge.send(map_vad_to_assets(vad))
+                    # [↓] 아래 화살표: Valence 감소 -> 꽃 오므라듦
+                    elif ext_key == b'P':
+                        vad["V"] = max(-1.0, vad["V"] - 0.1)
+                        print(f"[Keyboard] V(Valence) 감소 -> {vad['V']:.2f} (꽃 오므라듦)")
+                        ue_bridge.send(map_vad_to_assets(vad))
+                    # [Page Up]: D(Dominance) 증가 -> 조각상 부식 완화
+                    elif ext_key == b'I':
+                        vad["D"] = min(1.0, vad["D"] + 0.1)
+                        print(f"[Keyboard] D(Dominance) 증가 -> {vad['D']:.2f} (조각상 부식 완화)")
+                        ue_bridge.send(map_vad_to_assets(vad))
+                    # [Page Down]: D(Dominance) 감소 -> 조각상 부식 심해짐
+                    elif ext_key == b'Q':
+                        vad["D"] = max(-1.0, vad["D"] - 0.1)
+                        print(f"[Keyboard] D(Dominance) 감소 -> {vad['D']:.2f} (조각상 부식 증가)")
                         ue_bridge.send(map_vad_to_assets(vad))
                 else:
                     # [+] 또는 [=] 키
