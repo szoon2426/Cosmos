@@ -6,7 +6,6 @@ from src.gesture import InteractionEngine, InteractionSignals
 from src.hand import HandEstimator
 from src.pose import PoseEstimator
 from src.session import SessionState
-from src.ue_bridge import UEBridge
 from src.vad_mapper import compute_unreal_payload
 
 
@@ -120,11 +119,11 @@ def handle_keypress(
 
 
 def print_header() -> None:
-    print("[interaction2] keyboard state-machine debug")
+    print("[interaction_test] keyboard state-machine debug")
     print("A/D or J/L or Left/Right: open spread down/up (-1~1) | P: open end")
     print("W/S or I/K or Up/Down or -/=: rise down/up (-1~1) | F: rise end | Space hold: gather")
     print("1: open branch | 2: gather branch | 3: missing branch | B: breath toggle | N: breath release | C: clear | Q: quit")
-    print("Logs are appended only when a keyboard input is received.")
+    print("Logs are local-only and appended only when a keyboard input is received.")
     print()
 
 
@@ -136,8 +135,6 @@ def main() -> None:
     engine = InteractionEngine()
     engine.open_hold_duration = 0.0
     engine.rise_hold_duration = 0.0
-    ue_bridge = UEBridge()
-    ue_bridge.start()
 
     toggles: dict[str, float | bool | str] = {
         "open_branch": "missing",
@@ -201,16 +198,14 @@ def main() -> None:
         events = engine.update(signals)
         payload_obj = compute_unreal_payload(engine.emotion)
         payload = payload_obj.as_dict()
-
-        if engine.is_interacting:
-            ue_bridge.send(payload_obj)
+        target_emotion = engine.get_target_emotion()
 
         if key_pressed:
             print(
-                "[emotion] "
-                f"V={engine.emotion.valence:.3f} "
-                f"A={engine.emotion.arousal:.3f} "
-                f"D={engine.emotion.dominance:.3f} | "
+                "[local-log] "
+                f"V={target_emotion.valence:.3f} "
+                f"A={target_emotion.arousal:.3f} "
+                f"D={target_emotion.dominance:.3f} | "
                 f"open={engine.interaction.open.amount:.2f} "
                 f"rise={engine.interaction.rise.amount:.2f} | "
                 f"interacting={engine.is_interacting} | "
@@ -224,8 +219,6 @@ def main() -> None:
         toggles["breath_release"] = False
 
         time.sleep(0.05)
-
-    ue_bridge.stop()
 
 
 if __name__ == "__main__":

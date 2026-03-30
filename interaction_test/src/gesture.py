@@ -252,23 +252,9 @@ class InteractionEngine:
                 events.fire("deep_breath_ended")
 
     def _update_emotion(self, dt: float) -> None:
-        open_amount = self.interaction.open.amount
-        rise_amount = self.interaction.rise.amount
+        target_v, target_a, target_d = self.get_target_emotion_values()
         gather_active = self.interaction.gather.phase == "active"
         breath_active = self.interaction.deep_breath.phase == "active"
-
-        # Open/rise are now interpreted as "current amount -> current target"
-        # instead of accumulating forever over time. That means reducing amount
-        # immediately pulls the related emotion axes back down.
-        open_target_v = open_amount * self.open_v_max
-        open_target_d = open_amount * self.open_d_max
-        rise_target_a = rise_amount * self.rise_a_max
-        rise_target_v = rise_amount * self.rise_v_max
-        rise_target_d = rise_amount * self.rise_d_max
-
-        target_v = clamp(open_target_v + rise_target_v, -1.0, 1.0)
-        target_a = clamp(rise_target_a, -1.0, 1.0)
-        target_d = clamp(open_target_d + rise_target_d, -1.0, 1.0)
 
         self.emotion.valence = move_toward_target(
             self.emotion.valence, target_v, self.open_v_rate * dt
@@ -292,6 +278,33 @@ class InteractionEngine:
             self.emotion.arousal = move_toward_target(
                 self.emotion.arousal, self.stable_arousal, 0.05
             )
+
+    def get_target_emotion(self) -> EmotionState:
+        target_v, target_a, target_d = self.get_target_emotion_values()
+        return EmotionState(valence=target_v, arousal=target_a, dominance=target_d)
+
+    def get_target_emotion_values(self) -> tuple[float, float, float]:
+        open_amount = self.interaction.open.amount
+        rise_amount = self.interaction.rise.amount
+
+        open_target_v = open_amount * self.open_v_max
+        open_target_d = open_amount * self.open_d_max
+        rise_target_a = rise_amount * self.rise_a_max
+        rise_target_v = rise_amount * self.rise_v_max
+        rise_target_d = rise_amount * self.rise_d_max
+
+        target_v = clamp(open_target_v + rise_target_v, -1.0, 1.0)
+        target_a = clamp(rise_target_a, -1.0, 1.0)
+        target_d = clamp(open_target_d + rise_target_d, -1.0, 1.0)
+
+        if self.interaction.gather.phase == "active":
+            target_v = self.stable_valence
+            target_d = self.stable_dominance
+
+        if self.interaction.deep_breath.phase == "active":
+            target_a = self.stable_arousal
+
+        return target_v, target_a, target_d
 
     def _clamp_emotion(self) -> None:
         self.emotion.valence = clamp(self.emotion.valence, -1.0, 1.0)
