@@ -17,6 +17,7 @@ class OpenState:
     previous_amount: float = 0.0
     hand_branch: str = "missing"
     active_time: float = 0.0
+    anchor_mid_y: float = 0.0
 
 
 @dataclass
@@ -25,6 +26,7 @@ class RiseState:
     hold_elapsed: float = 0.0
     amount: float = 0.0
     previous_amount: float = 0.0
+    active_time: float = 0.0
 
 
 @dataclass
@@ -62,6 +64,8 @@ class InteractionSignals:
     open_ready: bool = False
     open_branch: str = "missing"
     open_spread: float = 0.0
+    open_mid_y: float = 0.0
+    open_drop_margin: float = 0.0
     open_release: bool = False
     rise_ready: bool = False
     rise_height: float = 0.0
@@ -133,6 +137,7 @@ class InteractionEngine:
             state.amount = 0.0
             state.hand_branch = "missing"
             state.active_time = 0.0
+            state.anchor_mid_y = 0.0
             if signals.open_ready:
                 state.phase = "arming"
                 state.hold_elapsed = signals.dt
@@ -153,6 +158,7 @@ class InteractionEngine:
                 if signals.open_branch == "open":
                     state.phase = "active"
                     state.active_time = 0.0
+                    state.anchor_mid_y = signals.open_mid_y
                     events.fire("open_started")
                 elif signals.open_branch == "gather":
                     state.phase = "idle"
@@ -167,11 +173,17 @@ class InteractionEngine:
             state.active_time += signals.dt
             state.previous_amount = state.amount
             state.amount = clamp(signals.open_spread, -1.0, 1.0)
-            if signals.open_release:
+            dropped_far_below_anchor = (
+                signals.open_mid_y >= state.anchor_mid_y + signals.open_drop_margin
+                if state.anchor_mid_y > 0.0 and signals.open_drop_margin > 0.0
+                else False
+            )
+            if signals.open_release or dropped_far_below_anchor:
                 state.phase = "idle"
                 state.previous_amount = state.amount
                 state.amount = 0.0
                 state.active_time = 0.0
+                state.anchor_mid_y = 0.0
                 events.fire("open_ended")
 
     def _update_rise(self, signals: InteractionSignals, events: EngineEvents) -> None:
@@ -180,6 +192,7 @@ class InteractionEngine:
         if state.phase == "idle":
             state.previous_amount = state.amount
             state.amount = 0.0
+            state.active_time = 0.0
             if signals.rise_ready:
                 state.phase = "arming"
                 state.hold_elapsed = signals.dt
@@ -197,16 +210,20 @@ class InteractionEngine:
             if state.hold_elapsed >= self.rise_hold_duration:
                 state.phase = "active"
                 state.hold_elapsed = 0.0
+                state.active_time = 0.0
                 events.fire("rise_started")
             return
 
         if state.phase == "active":
+            state.active_time += signals.dt
             state.previous_amount = state.amount
             state.amount = clamp(signals.rise_height, -1.0, 1.0)
-            if signals.rise_release:
+            allow_release = state.active_time >= 0.35
+            if allow_release and signals.rise_release:
                 state.phase = "idle"
                 state.previous_amount = state.amount
                 state.amount = 0.0
+                state.active_time = 0.0
                 events.fire("rise_ended")
 
     def _update_gather(self, signals: InteractionSignals, events: EngineEvents) -> None:
