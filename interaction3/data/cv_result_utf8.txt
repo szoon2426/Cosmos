@@ -1,0 +1,16 @@
+﻿=== 클래스별 샘플 수 ===
+  breath: 368
+  open: 537
+  prayer: 446
+  rise: 497
+
+=== 5-fold CV 정확도 ===
+  각 fold: [np.float64(0.881), np.float64(0.868), np.float64(0.862), np.float64(0.854), np.float64(0.867)]
+  평균: 0.866  표준편차: 0.009
+
+=== 혼동 행렬 (행=실제, 열=예측) ===
+          breath     open   prayer     rise
+   breath       58        1       13        2
+     open        9       87        7        5
+   prayer        6        4       77        2
+     rise        3        2        3       91

@@ -1,0 +1,17 @@
+#N canvas 430 222 451 301 10;
+#X obj 128 84 comport 9600;
+#X msg 199 51 close;
+#X msg 126 54 open 3;
+#X floatatom 132 118 5 0 0 0 - - -, f 5;
+#X obj 131 165 mtof;
+#X obj 130 141 / 4;
+#X obj 129 201 cycle~;
+#X obj 125 242 output~;
+#X connect 0 0 3 0;
+#X connect 1 0 0 0;
+#X connect 2 0 0 0;
+#X connect 3 0 5 0;
+#X connect 4 0 6 0;
+#X connect 5 0 4 0;
+#X connect 6 0 7 0;
+#X connect 6 0 7 1;

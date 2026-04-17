@@ -1,9 +1,12 @@
 import time
 import msvcrt
+from pathlib import Path
 
 from src.capture import WebcamCapture
+from src.eeg_profile import EmotionProfile
 from src.gesture import InteractionEngine, InteractionSignals
 from src.hand import HandEstimator
+from src.pd_bridge import PDBridge
 from src.pose import PoseEstimator
 from src.session import SessionState
 from src.ue_bridge import UEBridge
@@ -137,7 +140,9 @@ def main() -> None:
     engine.open_hold_duration = 0.0
     engine.rise_hold_duration = 0.0
     ue_bridge = UEBridge()
+    pd_bridge = PDBridge()
     ue_bridge.start()
+    pd_bridge.start()
 
     toggles: dict[str, float | bool | str] = {
         "open_branch": "missing",
@@ -154,6 +159,13 @@ def main() -> None:
     }
 
     _ = (capture, pose_estimator, hand_estimator, session)
+
+    profile_path = Path(__file__).with_name("eeg_profile.json")
+    if profile_path.exists():
+        engine.set_profile(EmotionProfile.from_json(profile_path))
+        print(f"[interaction2] loaded eeg profile: {profile_path}")
+    else:
+        print("[interaction2] using default emotion profile")
 
     running = True
     previous = time.time()
@@ -204,6 +216,7 @@ def main() -> None:
 
         if engine.is_interacting:
             ue_bridge.send(payload_obj)
+            pd_bridge.send(payload_obj)
 
         if key_pressed:
             print(
@@ -226,6 +239,7 @@ def main() -> None:
         time.sleep(0.05)
 
     ue_bridge.stop()
+    pd_bridge.stop()
 
 
 if __name__ == "__main__":

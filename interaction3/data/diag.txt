@@ -1,0 +1,4 @@
+rise: lw_y=0.697 rw_y=1.009 wrist_dist=1.447
+open: lw_y=0.820 rw_y=0.539 wrist_dist=1.099
+prayer: lw_y=0.554 rw_y=0.094 wrist_dist=1.194
+breath: lw_y=0.794 rw_y=0.720 wrist_dist=1.161

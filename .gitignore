@@ -5,6 +5,14 @@ __pycache__/
 *.pyd
 .env
 recordings/
+video/
+eeg-emotions/
 *.json
+!interaction2/eeg_profile.example.json
+!interaction3/data/snap_annotations.json
 *.csv
 .DS_Store
+
+# think-first runtime
+.agent/context/
+.agent/settings.local.json

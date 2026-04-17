@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from .eeg_profile import EmotionProfile
+
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -84,6 +86,7 @@ class EngineEvents:
 class InteractionEngine:
     interaction: InteractionState = field(default_factory=InteractionState)
     emotion: EmotionState = field(default_factory=EmotionState)
+    profile: EmotionProfile = field(default_factory=EmotionProfile)
     open_hold_duration: float = 1.0
     rise_hold_duration: float = 0.5
     stable_valence: float = 0.6
@@ -102,7 +105,15 @@ class InteractionEngine:
 
     def reset(self) -> None:
         self.interaction = InteractionState()
-        self.emotion = EmotionState()
+        self.emotion = EmotionState(
+            valence=self.profile.baseline_v,
+            arousal=self.profile.baseline_a,
+            dominance=self.profile.baseline_d,
+        )
+
+    def set_profile(self, profile: EmotionProfile) -> None:
+        self.profile = profile
+        self.reset()
 
     def update(self, signals: InteractionSignals) -> EngineEvents:
         events = EngineEvents()
@@ -260,40 +271,52 @@ class InteractionEngine:
         # Open/rise are now interpreted as "current amount -> current target"
         # instead of accumulating forever over time. That means reducing amount
         # immediately pulls the related emotion axes back down.
-        open_target_v = open_amount * self.open_v_max
-        open_target_d = open_amount * self.open_d_max
-        rise_target_a = rise_amount * self.rise_a_max
-        rise_target_v = rise_amount * self.rise_v_max
-        rise_target_d = rise_amount * self.rise_d_max
+        open_target_v = open_amount * self.open_v_max * self.profile.v_gain
+        open_target_d = open_amount * self.open_d_max * self.profile.d_gain
+        rise_target_a = rise_amount * self.rise_a_max * self.profile.a_gain
+        rise_target_v = rise_amount * self.rise_v_max * self.profile.v_gain
+        rise_target_d = rise_amount * self.rise_d_max * self.profile.d_gain
 
-        target_v = clamp(open_target_v + rise_target_v, -1.0, 1.0)
-        target_a = clamp(rise_target_a, -1.0, 1.0)
-        target_d = clamp(open_target_d + rise_target_d, -1.0, 1.0)
+        target_v = clamp(
+            self.profile.baseline_v + open_target_v + rise_target_v,
+            self.profile.v_min,
+            self.profile.v_max,
+        )
+        target_a = clamp(
+            self.profile.baseline_a + rise_target_a,
+            self.profile.a_min,
+            self.profile.a_max,
+        )
+        target_d = clamp(
+            self.profile.baseline_d + open_target_d + rise_target_d,
+            self.profile.d_min,
+            self.profile.d_max,
+        )
 
         self.emotion.valence = move_toward_target(
-            self.emotion.valence, target_v, self.open_v_rate * dt
+            self.emotion.valence, target_v, self.profile.v_return_rate * dt
         )
         self.emotion.arousal = move_toward_target(
-            self.emotion.arousal, target_a, self.rise_a_rate * dt
+            self.emotion.arousal, target_a, self.profile.a_return_rate * dt
         )
         self.emotion.dominance = move_toward_target(
-            self.emotion.dominance, target_d, self.open_d_rate * dt
+            self.emotion.dominance, target_d, self.profile.d_return_rate * dt
         )
 
         if gather_active:
             self.emotion.valence = move_toward_target(
-                self.emotion.valence, self.stable_valence, 0.03
+                self.emotion.valence, self.profile.baseline_v, self.profile.v_return_rate * dt
             )
             self.emotion.dominance = move_toward_target(
-                self.emotion.dominance, self.stable_dominance, 0.02
+                self.emotion.dominance, self.profile.baseline_d, self.profile.d_return_rate * dt
             )
 
         if breath_active:
             self.emotion.arousal = move_toward_target(
-                self.emotion.arousal, self.stable_arousal, 0.05
+                self.emotion.arousal, self.profile.baseline_a, self.profile.a_return_rate * dt
             )
 
     def _clamp_emotion(self) -> None:
-        self.emotion.valence = clamp(self.emotion.valence, -1.0, 1.0)
-        self.emotion.arousal = clamp(self.emotion.arousal, -1.0, 1.0)
-        self.emotion.dominance = clamp(self.emotion.dominance, -1.0, 1.0)
+        self.emotion.valence = clamp(self.emotion.valence, self.profile.v_min, self.profile.v_max)
+        self.emotion.arousal = clamp(self.emotion.arousal, self.profile.a_min, self.profile.a_max)
+        self.emotion.dominance = clamp(self.emotion.dominance, self.profile.d_min, self.profile.d_max)
