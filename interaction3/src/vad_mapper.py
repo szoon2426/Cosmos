@@ -59,8 +59,8 @@ def compute_unreal_payload(v: float, a: float, d: float) -> UnrealPayload:
 
     decay = clamp(0.5 - 0.3 * v + 0.3 * a, 0.0, 1.2)
     density = clamp(remap(0.5 * v + 0.5 * d, -1.0, 1.0, 0.4, 1.0), 0.4, 1.0)
-    flower = clamp(remap(density, 0.4, 1.0, 0.6, 1.5), 0.6, 1.5)
-    tree = density
+    flower = clamp(remap(density, 0.4, 1.0, 0.0, 1.5), 0.0, 1.5)
+    tree = clamp(remap(density, 0.4, 1.0, 0.0, 1.0), 0.0, 1.0)
     min_speed = clamp(remap(a, -1.0, 1.0, 0.0, 580.0), 0.0, 600.0)
     max_speed = clamp(min_speed + 20.0, 0.0, 600.0)
 
