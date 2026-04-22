@@ -1,4 +1,4 @@
-import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -21,6 +21,9 @@ class UEBridge:
     timeout_sec: float = 0.5
     session: requests.Session = field(default_factory=requests.Session)
     executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    pending_payload: UnrealPayload | None = None
+    worker_running: bool = False
 
     def start(self) -> None:
         print(f"[interaction3] UEBridge ready -> {BASE_URL}")
@@ -36,12 +39,26 @@ class UEBridge:
             print(f"[interaction3] UE payload -> {payload.as_dict()}")
             return
 
-        # 백그라운드 스레드에서 HTTP 요청 처리 (카메라 화면 렉 방지)
-        def _worker():
+        # Only keep the newest payload so Unreal does not apply stale queued values.
+        with self.lock:
+            self.pending_payload = payload
+            if self.worker_running:
+                return
+            self.worker_running = True
+
+        self.executor.submit(self._drain_worker)
+
+    def _drain_worker(self) -> None:
+        while True:
+            with self.lock:
+                payload = self.pending_payload
+                self.pending_payload = None
+                if payload is None:
+                    self.worker_running = False
+                    return
+
             for property_name, value in payload.as_preset_properties().items():
                 self._set_property(property_name, value)
-                
-        self.executor.submit(_worker)
 
     def _set_property(self, property_name: str, value: float) -> None:
         url = PROPERTY_URL_TEMPLATE.format(property_name=property_name)
@@ -53,6 +70,4 @@ class UEBridge:
         except requests.exceptions.Timeout:
             print(f"[interaction3] UE timeout -> {property_name}")
         except requests.exceptions.ConnectionError:
-            pass # 언리얼 안 켜져있을 때 에러 도배 방지
-
-
+            pass
