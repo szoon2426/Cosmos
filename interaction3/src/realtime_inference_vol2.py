@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -33,6 +33,59 @@ else:
     from .realtime_inference import draw_skeleton, draw_vad_meter
     from .ue_bridge import UEBridge
     from .vad_mapper import compute_unreal_payload
+
+
+READY_OFF_RECOVERY_DELAY_SECONDS = 5.0
+READY_OFF_RECOVERY_DURATION_SECONDS = 25.0
+BASE_MEMORY_LEARN_RATE = 0.02
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def blend_triplet(
+    current: tuple[float, float, float],
+    target: tuple[float, float, float],
+    alpha: float,
+) -> tuple[float, float, float]:
+    alpha = clamp(alpha, 0.0, 1.0)
+    return (
+        lerp(current[0], target[0], alpha),
+        lerp(current[1], target[1], alpha),
+        lerp(current[2], target[2], alpha),
+    )
+
+
+@dataclass(slots=True)
+class BaseMemoryState:
+    dv: float = 0.0
+    da: float = 0.0
+    dd: float = 0.0
+
+    def apply_to(self, base_vad: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (
+            clamp(base_vad[0] + self.dv, -1.0, 1.0),
+            clamp(base_vad[1] + self.da, -1.0, 1.0),
+            clamp(base_vad[2] + self.dd, -1.0, 1.0),
+        )
+
+    def learn_from(
+        self,
+        base_vad: tuple[float, float, float],
+        observed_vad: tuple[float, float, float],
+        alpha: float = BASE_MEMORY_LEARN_RATE,
+    ) -> None:
+        target_dv = observed_vad[0] - base_vad[0]
+        target_da = observed_vad[1] - base_vad[1]
+        target_dd = observed_vad[2] - base_vad[2]
+        self.dv = clamp(lerp(self.dv, target_dv, alpha), -0.25, 0.25)
+        self.da = clamp(lerp(self.da, target_da, alpha), -0.25, 0.25)
+        self.dd = clamp(lerp(self.dd, target_dd, alpha), -0.25, 0.25)
 
 
 class EmaValue:
@@ -97,10 +150,12 @@ def main() -> None:
     smoother = ConductSmoother()
     session = ConductSession()
     eeg_base_state = BaseVADState()
+    base_memory_state = BaseMemoryState()
     world_vad = (0.0, 0.0, 0.0)
     previous_frame_time = time.time()
     conduct_debug = ConductDebug()
     smoothed_features = ConductFeatures()
+    ready_off_started_at: float | None = None
 
     try:
         while True:
@@ -141,7 +196,8 @@ def main() -> None:
                 min_valid_window_ratio=args.eeg_min_valid_window_ratio,
             )
             eeg_base_state = resolve_base_vad(eeg_profile, previous=eeg_base_state)
-            base_vad = (eeg_base_state.v, eeg_base_state.a, eeg_base_state.d)
+            eeg_base_vad = (eeg_base_state.v, eeg_base_state.a, eeg_base_state.d)
+            base_vad = base_memory_state.apply_to(eeg_base_vad)
 
             world_vad, conduct_debug = compute_conduct_vad(
                 base_vad=base_vad,
@@ -150,6 +206,17 @@ def main() -> None:
                 features=smoothed_features,
                 dt=dt,
             )
+
+            if session.is_active():
+                ready_off_started_at = None
+            elif ready_off_started_at is None:
+                ready_off_started_at = now
+
+            if not session.is_active() and ready_off_started_at is not None:
+                elapsed_off = now - ready_off_started_at
+                if elapsed_off >= READY_OFF_RECOVERY_DELAY_SECONDS:
+                    recovery_alpha = 1.0 / max(READY_OFF_RECOVERY_DURATION_SECONDS * 30.0, 1.0)
+                    world_vad = blend_triplet(world_vad, base_vad, recovery_alpha)
 
             raw_payload = compute_unreal_payload(*world_vad)
             payload = raw_payload.as_dict()
@@ -167,6 +234,7 @@ def main() -> None:
             if "ready_enabled" in events:
                 print(f"[{now:.2f}] conduct mode ON")
             if "ready_disabled" in events:
+                base_memory_state.learn_from(eeg_base_vad, world_vad)
                 print(f"[{now:.2f}] conduct mode OFF")
 
             cv2.putText(frame, "VOL2 CONDUCT MODE", (20, 40), cv2.FONT_HERSHEY_DUPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
@@ -222,7 +290,7 @@ def main() -> None:
             )
             cv2.putText(
                 frame,
-                f"EEG BASE V={base_vad[0]:+.2f} A={base_vad[1]:+.2f} D={base_vad[2]:+.2f} usable={eeg_base_state.usable} reason={eeg_base_state.reason}",
+                f"EEG RAW BASE V={eeg_base_vad[0]:+.2f} A={eeg_base_vad[1]:+.2f} D={eeg_base_vad[2]:+.2f} usable={eeg_base_state.usable} reason={eeg_base_state.reason}",
                 (20, 430),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.58,
@@ -232,8 +300,18 @@ def main() -> None:
             )
             cv2.putText(
                 frame,
-                f"WORLD TARGET VAD V={payload['V']:+.2f} A={payload['A']:+.2f} D={payload['D']:+.2f}",
+                f"ADAPTIVE BASE V={base_vad[0]:+.2f} A={base_vad[1]:+.2f} D={base_vad[2]:+.2f} mem=({base_memory_state.dv:+.3f},{base_memory_state.da:+.3f},{base_memory_state.dd:+.3f})",
                 (20, 456),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (255, 220, 160),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                f"WORLD TARGET VAD V={payload['V']:+.2f} A={payload['A']:+.2f} D={payload['D']:+.2f} off_elapsed={0.0 if ready_off_started_at is None else max(0.0, now - ready_off_started_at):.1f}s",
+                (20, 482),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.62,
                 (120, 255, 255),
@@ -243,7 +321,7 @@ def main() -> None:
             cv2.putText(
                 frame,
                 f"UE flower={payload['flower']:.2f} tree={payload['tree']:.2f} decay={payload['decay']:.2f} fountain={payload['min_speed']:.0f}-{payload['max_speed']:.0f}",
-                (20, 482),
+                (20, 508),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.58,
                 (200, 255, 200),
@@ -253,7 +331,7 @@ def main() -> None:
             cv2.putText(
                 frame,
                 f"PD ready={1.0 if session.is_active() else 0.0:.0f} V={payload['V']:+.2f} A={payload['A']:+.2f} D={payload['D']:+.2f}",
-                (20, 508),
+                (20, 534),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.58,
                 (200, 255, 200),

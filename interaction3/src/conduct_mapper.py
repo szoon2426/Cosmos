@@ -47,15 +47,10 @@ def compute_conduct_vad(
     debug = ConductDebug()
 
     if not session.is_active():
-        relaxed = (
-            blend(current_world_vad[0], base_vad[0], 0.08),
-            blend(current_world_vad[1], base_vad[1], 0.08),
-            blend(current_world_vad[2], base_vad[2], 0.05),
-        )
         debug.v_target = base_vad[0]
         debug.a_target = base_vad[1]
         debug.d_target = base_vad[2]
-        return relaxed, debug
+        return current_world_vad, debug
 
     debug.index_dx = features.right_index_x - session.base_right_index_x
     debug.index_dy = features.right_index_y - session.base_right_index_y
