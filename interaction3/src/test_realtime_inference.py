@@ -69,7 +69,7 @@ def send_pd_ready(pd: PDBridge, enabled: bool, send_enabled: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Realtime interaction test without snap gate/event")
     parser.add_argument("--camera", type=int, default=0)
-    parser.add_argument("--model", default="interaction3/models/knn_model_snapgate_v3.joblib")
+    parser.add_argument("--model", default="interaction3/models/knn_model_v3_uncertain.joblib")
     parser.add_argument("--window-size", type=int, default=10)
     parser.add_argument("--vote-size", type=int, default=5)
     parser.add_argument("--send", action="store_true", help="Enable sending data to UE and PD bridges")

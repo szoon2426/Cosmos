@@ -31,20 +31,28 @@ def normalize_landmarks(landmarks: dict[str, tuple[float, float]]) -> dict[str, 
     return normalized
 
 
-def detect_snap_gate(normalized_landmarks: dict[str, np.ndarray]) -> dict[str, bool | str]:
-    ls = normalized_landmarks["LEFT_SHOULDER"]
-    rs = normalized_landmarks["RIGHT_SHOULDER"]
+def detect_snap_gate(normalized_landmarks: dict[str, np.ndarray]) -> dict[str, bool | str | float]:
     le = normalized_landmarks["LEFT_ELBOW"]
     re = normalized_landmarks["RIGHT_ELBOW"]
     lw = normalized_landmarks["LEFT_WRIST"]
     rw = normalized_landmarks["RIGHT_WRIST"]
     left_has_hand = all(
         key in normalized_landmarks
-        for key in ("LEFT_HAND_THUMB_TIP", "LEFT_HAND_INDEX_TIP", "LEFT_HAND_INDEX_MCP")
+        for key in (
+            "LEFT_HAND_THUMB_TIP",
+            "LEFT_HAND_INDEX_TIP",
+            "LEFT_HAND_INDEX_MCP",
+            "LEFT_HAND_MIDDLE_TIP",
+        )
     )
     right_has_hand = all(
         key in normalized_landmarks
-        for key in ("RIGHT_HAND_THUMB_TIP", "RIGHT_HAND_INDEX_TIP", "RIGHT_HAND_INDEX_MCP")
+        for key in (
+            "RIGHT_HAND_THUMB_TIP",
+            "RIGHT_HAND_INDEX_TIP",
+            "RIGHT_HAND_INDEX_MCP",
+            "RIGHT_HAND_MIDDLE_TIP",
+        )
     )
 
     # Normalized coordinates are relative to shoulder center and scaled by shoulder width.
@@ -59,8 +67,23 @@ def detect_snap_gate(normalized_landmarks: dict[str, np.ndarray]) -> dict[str, b
     left_clear_side = (rw[1] - lw[1]) > 0.22
     right_clear_side = (lw[1] - rw[1]) > 0.22
 
-    left_gate = bool(left_has_hand and left_above and left_near_center and left_clear_side)
-    right_gate = bool(right_has_hand and right_above and right_near_center and right_clear_side)
+    left_thumb_middle_distance = 99.0
+    right_thumb_middle_distance = 99.0
+    if left_has_hand:
+        left_thumb = normalized_landmarks["LEFT_HAND_THUMB_TIP"]
+        left_middle = normalized_landmarks["LEFT_HAND_MIDDLE_TIP"]
+        left_thumb_middle_distance = float(np.linalg.norm(left_thumb - left_middle))
+    if right_has_hand:
+        right_thumb = normalized_landmarks["RIGHT_HAND_THUMB_TIP"]
+        right_middle = normalized_landmarks["RIGHT_HAND_MIDDLE_TIP"]
+        right_thumb_middle_distance = float(np.linalg.norm(right_thumb - right_middle))
+
+    thumb_middle_contact_threshold = 0.16
+    left_prep_contact = left_thumb_middle_distance < thumb_middle_contact_threshold
+    right_prep_contact = right_thumb_middle_distance < thumb_middle_contact_threshold
+
+    left_gate = bool(left_has_hand and left_above and left_near_center and left_clear_side and left_prep_contact)
+    right_gate = bool(right_has_hand and right_above and right_near_center and right_clear_side and right_prep_contact)
 
     active_side = "none"
     if left_gate:
@@ -79,6 +102,11 @@ def detect_snap_gate(normalized_landmarks: dict[str, np.ndarray]) -> dict[str, b
         "right_clear_side": right_clear_side,
         "left_has_hand": left_has_hand,
         "right_has_hand": right_has_hand,
+        "left_thumb_middle_distance": left_thumb_middle_distance,
+        "right_thumb_middle_distance": right_thumb_middle_distance,
+        "left_prep_contact": left_prep_contact,
+        "right_prep_contact": right_prep_contact,
+        "thumb_middle_contact_threshold": thumb_middle_contact_threshold,
     }
 
 
@@ -143,16 +171,17 @@ def detect_snap_event(
         thumb_middle_delta = thumb_middle_distance - prev_thumb_middle_distance
         middle_motion = float(np.linalg.norm(middle - prev_middle))
 
+    # Snap event should stay simple:
+    # - gate handles "one-arm prep pose + thumb-middle prep contact"
+    # - event handles the actual thumb-index touch/closure moment inside that gate
+    clear_index_contact = thumb_index_distance < 0.12
+    fast_index_closing = thumb_index_delta < -0.04 and thumb_index_distance < 0.18
+    middle_releasing = thumb_middle_delta > 0.02 or middle_motion > 0.03
+
     event = bool(
-        prev_thumb_middle_distance < 0.34
-        and thumb_middle_delta > 0.018
-        and middle_motion > 0.018
-        and index_extension > 0.06
-        and (
-            thumb_crossed
-            or thumb_index_distance < 0.58
-            or thumb_index_delta < -0.01
-        )
+        clear_index_contact
+        or fast_index_closing
+        or (clear_index_contact and middle_releasing)
     )
 
     return {

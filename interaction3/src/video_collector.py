@@ -19,7 +19,7 @@ else:
     from .pose_extractor import PoseExtractor
 
 
-VALID_LABELS = {"rise", "open", "prayer", "breath", "snap"}
+VALID_LABELS = {"rise", "open", "prayer", "breath", "snap", "uncertain"}
 
 
 def main() -> None:

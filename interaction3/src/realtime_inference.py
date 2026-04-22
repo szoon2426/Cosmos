@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from collections import Counter, deque
@@ -16,9 +17,11 @@ if __package__ in (None, ""):
         SlidingWindowBuffer,
         compute_frame_features,
         compute_snap_frame_features,
+        detect_snap_event,
         detect_snap_gate,
         normalize_landmarks,
     )
+    from eeg_profile_loader import BaseVADState, load_eeg_profile, resolve_base_vad
     from hand_extractor import HandExtractor
     from model_io import load_model
     from pose_extractor import PoseExtractor
@@ -30,9 +33,11 @@ else:
         SlidingWindowBuffer,
         compute_frame_features,
         compute_snap_frame_features,
+        detect_snap_event,
         detect_snap_gate,
         normalize_landmarks,
     )
+    from .eeg_profile_loader import BaseVADState, load_eeg_profile, resolve_base_vad
     from .hand_extractor import HandExtractor
     from .model_io import load_model
     from .pose_extractor import PoseExtractor
@@ -96,10 +101,14 @@ RIVAL_LABEL_FRAMES = {
     "breath": 4,
     "snap": 2,
 }
+ARMING_GRACE_FRAMES = {
+    "rise": 4,
+    "open": 3,
+}
 
 ACTIVE_RIVAL_SECONDS = 1.0
 ARMING_STABILITY_LIMITS = {
-    "open": (0.28, 0.28, 0.28),
+    "open": (0.45, 0.45, 0.45),
     "rise": (0.0, 0.26),
     "prayer": (0.18, 0.24, 0.24),
     "breath": (0.22, 0.28, 0.28),
@@ -111,10 +120,105 @@ PRAYER_FULL_FRAMES = 45
 BREATH_FULL_FRAMES = 45
 SNAP_PULSE_FRAMES = 4
 DECAY_DELTA_SCALE = 8.0
+ONE_EURO_SIGNAL_MIN_CUTOFF = 1.2
+ONE_EURO_SIGNAL_BETA = 0.18
+ONE_EURO_SIGNAL_D_CUTOFF = 1.0
+RISE_RELEASE_GRACE_FRAMES = 30
+READY_OFF_RECOVERY_DELAY_SECONDS = 5.0
+READY_OFF_RECOVERY_DURATION_SECONDS = 25.0
+PRAYER_RECOVERY_ALPHA_MIN = 0.03
+PRAYER_RECOVERY_ALPHA_MAX = 0.10
+BREATH_RECOVERY_ALPHA_MIN = 0.02
+BREATH_RECOVERY_ALPHA_MAX = 0.08
+ACTIVE_TARGET_ALPHA = 0.22
+BASE_MEMORY_LEARN_RATE = 0.02
 
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def allowed_prediction_labels(ready_gate: bool) -> set[str]:
+    if not ready_gate:
+        return {"snap", "uncertain"}
+    return {"snap", "rise", "open", "prayer", "breath", "uncertain"}
+
+
+def masked_prediction_from_probs(
+    model: object,
+    probs: np.ndarray,
+    ready_gate: bool,
+    threshold: float = 0.5,
+) -> tuple[str, float]:
+    classes = [str(item) for item in getattr(model, "classes_", [])]
+    if not classes or len(classes) != len(probs):
+        max_prob = float(np.max(probs)) if len(probs) else 0.0
+        return ("uncertain", max_prob)
+
+    allowed = allowed_prediction_labels(ready_gate)
+    masked = np.zeros_like(probs, dtype=np.float32)
+    for idx, label in enumerate(classes):
+        if label in allowed:
+            masked[idx] = float(probs[idx])
+
+    total = float(masked.sum())
+    if total <= 0.0:
+        return ("uncertain", 0.0)
+
+    masked /= total
+    best_idx = int(np.argmax(masked))
+    best_prob = float(masked[best_idx])
+    best_label = classes[best_idx]
+    if best_prob < threshold:
+        return ("uncertain", best_prob)
+    return (best_label, best_prob)
+
+
+def smoothing_factor(dt: float, cutoff: float) -> float:
+    if cutoff <= 0.0:
+        return 1.0
+    r = 2.0 * math.pi * cutoff * dt
+    return r / (r + 1.0)
+
+
+class LowPassFilter:
+    def __init__(self) -> None:
+        self.initialized = False
+        self.prev = 0.0
+
+    def apply(self, value: float, alpha: float) -> float:
+        if not self.initialized:
+            self.initialized = True
+            self.prev = value
+            return value
+        self.prev = alpha * value + (1.0 - alpha) * self.prev
+        return self.prev
+
+
+class OneEuroFilter:
+    def __init__(self, min_cutoff: float, beta: float, d_cutoff: float = 1.0) -> None:
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.x_filter = LowPassFilter()
+        self.dx_filter = LowPassFilter()
+        self.last_value: float | None = None
+        self.last_time: float | None = None
+
+    def apply(self, value: float, now: float) -> float:
+        if self.last_time is None or self.last_value is None:
+            self.last_time = now
+            self.last_value = value
+            return self.x_filter.apply(value, 1.0)
+
+        dt = max(now - self.last_time, 1e-3)
+        dx = (value - self.last_value) / dt
+        dx_hat = self.dx_filter.apply(dx, smoothing_factor(dt, self.d_cutoff))
+        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        filtered = self.x_filter.apply(value, smoothing_factor(dt, cutoff))
+        self.last_time = now
+        self.last_value = filtered
+        return filtered
 
 
 def compute_pd_continuous_values(
@@ -146,6 +250,78 @@ def compute_pd_continuous_values(
         "RECOVER": recover_delta,
     }
     return values, current_decay_value
+
+
+def combine_base_and_delta_vad(
+    base_vad: tuple[float, float, float],
+    interaction_vad: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        clamp(base_vad[0] + interaction_vad[0], -1.0, 1.0),
+        clamp(base_vad[1] + interaction_vad[1], -1.0, 1.0),
+        clamp(base_vad[2] + interaction_vad[2], -1.0, 1.0),
+    )
+
+
+def lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def blend_triplet(
+    current: tuple[float, float, float],
+    target: tuple[float, float, float],
+    alpha: float,
+) -> tuple[float, float, float]:
+    alpha = clamp(alpha, 0.0, 1.0)
+    return (
+        lerp(current[0], target[0], alpha),
+        lerp(current[1], target[1], alpha),
+        lerp(current[2], target[2], alpha),
+    )
+
+
+@dataclass
+class WorldVADState:
+    v: float = 0.0
+    a: float = 0.0
+    d: float = 0.0
+    initialized: bool = False
+
+    def as_tuple(self) -> tuple[float, float, float]:
+        return (self.v, self.a, self.d)
+
+    def set_from_tuple(self, values: tuple[float, float, float]) -> None:
+        self.v = clamp(values[0], -1.0, 1.0)
+        self.a = clamp(values[1], -1.0, 1.0)
+        self.d = clamp(values[2], -1.0, 1.0)
+        self.initialized = True
+
+
+@dataclass
+class BaseMemoryState:
+    dv: float = 0.0
+    da: float = 0.0
+    dd: float = 0.0
+
+    def apply_to(self, base_vad: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (
+            clamp(base_vad[0] + self.dv, -1.0, 1.0),
+            clamp(base_vad[1] + self.da, -1.0, 1.0),
+            clamp(base_vad[2] + self.dd, -1.0, 1.0),
+        )
+
+    def learn_from(
+        self,
+        base_vad: tuple[float, float, float],
+        observed_vad: tuple[float, float, float],
+        alpha: float = BASE_MEMORY_LEARN_RATE,
+    ) -> None:
+        target_dv = observed_vad[0] - base_vad[0]
+        target_da = observed_vad[1] - base_vad[1]
+        target_dd = observed_vad[2] - base_vad[2]
+        self.dv = clamp(lerp(self.dv, target_dv, alpha), -0.25, 0.25)
+        self.da = clamp(lerp(self.da, target_da, alpha), -0.25, 0.25)
+        self.dd = clamp(lerp(self.dd, target_dd, alpha), -0.25, 0.25)
 
 
 def _midpoint(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
@@ -220,6 +396,192 @@ class RuntimeSignals:
         return False
 
 
+@dataclass
+class RuntimeSignalFilter:
+    open_distance: OneEuroFilter = field(
+        default_factory=lambda: OneEuroFilter(
+            min_cutoff=ONE_EURO_SIGNAL_MIN_CUTOFF,
+            beta=ONE_EURO_SIGNAL_BETA,
+            d_cutoff=ONE_EURO_SIGNAL_D_CUTOFF,
+        )
+    )
+    wrist_center_x: OneEuroFilter = field(
+        default_factory=lambda: OneEuroFilter(
+            min_cutoff=ONE_EURO_SIGNAL_MIN_CUTOFF,
+            beta=ONE_EURO_SIGNAL_BETA,
+            d_cutoff=ONE_EURO_SIGNAL_D_CUTOFF,
+        )
+    )
+    wrist_center_y: OneEuroFilter = field(
+        default_factory=lambda: OneEuroFilter(
+            min_cutoff=ONE_EURO_SIGNAL_MIN_CUTOFF,
+            beta=ONE_EURO_SIGNAL_BETA,
+            d_cutoff=ONE_EURO_SIGNAL_D_CUTOFF,
+        )
+    )
+    left_rise_height: OneEuroFilter = field(
+        default_factory=lambda: OneEuroFilter(
+            min_cutoff=ONE_EURO_SIGNAL_MIN_CUTOFF,
+            beta=ONE_EURO_SIGNAL_BETA,
+            d_cutoff=ONE_EURO_SIGNAL_D_CUTOFF,
+        )
+    )
+    right_rise_height: OneEuroFilter = field(
+        default_factory=lambda: OneEuroFilter(
+            min_cutoff=ONE_EURO_SIGNAL_MIN_CUTOFF,
+            beta=ONE_EURO_SIGNAL_BETA,
+            d_cutoff=ONE_EURO_SIGNAL_D_CUTOFF,
+        )
+    )
+
+    def apply(self, signals: RuntimeSignals, now: float) -> RuntimeSignals:
+        filtered_open_distance = self.open_distance.apply(signals.open_distance, now)
+        filtered_wrist_center_x = self.wrist_center_x.apply(signals.wrist_center_x, now)
+        filtered_wrist_center_y = self.wrist_center_y.apply(signals.wrist_center_y, now)
+        filtered_left_rise_height = self.left_rise_height.apply(signals.left_rise_height, now)
+        filtered_right_rise_height = self.right_rise_height.apply(signals.right_rise_height, now)
+
+        return RuntimeSignals(
+            open_ready=signals.open_ready,
+            open_distance=filtered_open_distance,
+            wrist_center_x=filtered_wrist_center_x,
+            wrist_center_y=filtered_wrist_center_y,
+            open_release=signals.open_release,
+            rise_side=signals.rise_side,
+            left_rise_height=filtered_left_rise_height,
+            right_rise_height=filtered_right_rise_height,
+            left_rise_out=signals.left_rise_out,
+            right_rise_out=signals.right_rise_out,
+            prayer_gate=signals.prayer_gate,
+            breath_gate=signals.breath_gate,
+            snap_gate_side=signals.snap_gate_side,
+        )
+
+
+@dataclass
+class SnapGateSmoother:
+    open_frames: int = 3
+    close_frames: int = 4
+    state: str = "none"
+    candidate_side: str = "none"
+    candidate_count: int = 0
+    missing_count: int = 0
+
+    def update(self, raw_side: str) -> str:
+        raw_side = raw_side if raw_side in {"left", "right"} else "none"
+
+        if self.state == "none":
+            if raw_side == "none":
+                self.candidate_side = "none"
+                self.candidate_count = 0
+                return "none"
+            if raw_side == self.candidate_side:
+                self.candidate_count += 1
+            else:
+                self.candidate_side = raw_side
+                self.candidate_count = 1
+            if self.candidate_count >= self.open_frames:
+                self.state = self.candidate_side
+                self.missing_count = 0
+            return self.state
+
+        if raw_side == self.state:
+            self.missing_count = 0
+            self.candidate_side = self.state
+            self.candidate_count = 0
+            return self.state
+
+        if raw_side == "none":
+            self.missing_count += 1
+            if self.missing_count >= self.close_frames:
+                self.state = "none"
+                self.candidate_side = "none"
+                self.candidate_count = 0
+                self.missing_count = 0
+            return self.state
+
+        self.missing_count += 1
+        if raw_side == self.candidate_side:
+            self.candidate_count += 1
+        else:
+            self.candidate_side = raw_side
+            self.candidate_count = 1
+
+        if self.candidate_count >= self.open_frames:
+            self.state = raw_side
+            self.missing_count = 0
+            self.candidate_count = 0
+        elif self.missing_count >= self.close_frames:
+            self.state = "none"
+            self.candidate_side = "none"
+            self.candidate_count = 0
+            self.missing_count = 0
+
+        return self.state
+
+
+@dataclass
+class RiseSideSmoother:
+    open_frames: int = 2
+    close_frames: int = 5
+    state: str = "none"
+    candidate_side: str = "none"
+    candidate_count: int = 0
+    missing_count: int = 0
+
+    def update(self, raw_side: str) -> str:
+        raw_side = raw_side if raw_side in {"left", "right"} else "none"
+
+        if self.state == "none":
+            if raw_side == "none":
+                self.candidate_side = "none"
+                self.candidate_count = 0
+                return "none"
+            if raw_side == self.candidate_side:
+                self.candidate_count += 1
+            else:
+                self.candidate_side = raw_side
+                self.candidate_count = 1
+            if self.candidate_count >= self.open_frames:
+                self.state = self.candidate_side
+                self.missing_count = 0
+            return self.state
+
+        if raw_side == self.state:
+            self.missing_count = 0
+            self.candidate_side = self.state
+            self.candidate_count = 0
+            return self.state
+
+        if raw_side == "none":
+            self.missing_count += 1
+            if self.missing_count >= self.close_frames:
+                self.state = "none"
+                self.candidate_side = "none"
+                self.candidate_count = 0
+                self.missing_count = 0
+            return self.state
+
+        self.missing_count += 1
+        if raw_side == self.candidate_side:
+            self.candidate_count += 1
+        else:
+            self.candidate_side = raw_side
+            self.candidate_count = 1
+
+        if self.candidate_count >= self.open_frames:
+            self.state = raw_side
+            self.missing_count = 0
+            self.candidate_count = 0
+        elif self.missing_count >= self.close_frames:
+            self.state = "none"
+            self.candidate_side = "none"
+            self.candidate_count = 0
+            self.missing_count = 0
+
+        return self.state
+
+
 def build_runtime_signals(normalized_landmarks: dict[str, np.ndarray]) -> RuntimeSignals:
     ls = normalized_landmarks["LEFT_SHOULDER"]
     rs = normalized_landmarks["RIGHT_SHOULDER"]
@@ -232,24 +594,28 @@ def build_runtime_signals(normalized_landmarks: dict[str, np.ndarray]) -> Runtim
     wrist_distance = float(np.linalg.norm(lw - rw))
     wrist_center = (lw + rw) * 0.5
     open_ready = bool(
-        wrist_distance < 1.6
-        and abs(float(lw[1] - rw[1])) < 0.6
+        abs(float(lw[1] - rw[1])) < 0.6
         and lw[1] < 1.4
         and rw[1] < 1.4
     )
-    open_release = bool(lw[1] > 0.9 and rw[1] > 0.9)
+    # Open should release only when both hands are clearly lowered,
+    # not when they move inward in front of the chest.
+    open_release = bool(lw[1] > 1.25 and rw[1] > 1.25)
 
     left_rise_height = float(-lw[1])
     right_rise_height = float(-rw[1])
-    if left_rise_height > right_rise_height + 0.1:
+    rise_side_margin = 0.06
+    if left_rise_height > right_rise_height + rise_side_margin:
         rise_side = "left"
-    elif right_rise_height > left_rise_height + 0.1:
+    elif right_rise_height > left_rise_height + rise_side_margin:
         rise_side = "right"
     else:
         rise_side = "none"
 
-    left_rise_out = bool(lw[0] < ls[0] - 0.35 or lw[0] > rs[0] + 0.35)
-    right_rise_out = bool(rw[0] > rs[0] + 0.35 or rw[0] < ls[0] - 0.35)
+    # Rise should only release when the active hand clearly exits sideways,
+    # not because the wrist jitters a little while moving up/down.
+    left_rise_out = bool(lw[0] < ls[0] - 1.15 or lw[0] > rs[0] + 1.15)
+    right_rise_out = bool(rw[0] > rs[0] + 1.15 or rw[0] < ls[0] - 1.15)
 
     prayer_gate = bool(wrist_distance < 0.55 and abs(float(lw[1] - rw[1])) < 0.45)
 
@@ -296,6 +662,7 @@ class InteractionController:
     rise_side: str = "none"
     pd_decay_prev: float = 0.0
     arming_reference: tuple[float, ...] = field(default_factory=tuple)
+    arming_grace_count: int = 0
 
     def _eligible_label(
         self,
@@ -308,18 +675,37 @@ class InteractionController:
             return "none"
         if snap_event_detected:
             return "snap" if signals.snap_gate_side != "none" else "none"
-        if prediction in {"waiting", "uncertain", "none"}:
+        if prediction in {"waiting", "none"}:
             return "none"
         if not self.ready_gate:
             return "none"
-        if prediction == "open":
-            return "open" if signals.open_ready else "none"
         if prediction == "rise":
             return "rise" if signals.rise_side != "none" else "none"
         if prediction == "prayer":
             return "prayer" if signals.prayer_gate else "none"
         if prediction == "breath":
             return "breath" if signals.breath_gate else "none"
+        if prediction == "open":
+            return "open" if signals.open_ready else "none"
+        if prediction == "uncertain":
+            if self.state == "arming" and self.candidate == "open" and signals.open_ready:
+                return "open"
+            if self.state == "arming" and self.candidate == "rise" and signals.rise_side != "none":
+                return "rise"
+            if self.state == "arming" and self.candidate == "prayer" and signals.prayer_gate:
+                return "prayer"
+            if self.state == "arming" and self.candidate == "breath" and signals.breath_gate:
+                return "breath"
+
+            open_fallback_ok = (
+                signals.open_ready
+                and not signals.prayer_gate
+                and not signals.breath_gate
+                and signals.rise_side == "none"
+            )
+            if open_fallback_ok:
+                return "open"
+            return "none"
         return "none"
 
     def _stability_signature(self, label: str, signals: RuntimeSignals) -> tuple[float, ...]:
@@ -350,6 +736,7 @@ class InteractionController:
         self.arming_count = 1
         self.arming_started_at = now
         self.arming_reference = self._stability_signature(label, signals)
+        self.arming_grace_count = 0
 
     def _activate(self, label: str, signals: RuntimeSignals) -> list[str]:
         self.state = "active"
@@ -394,6 +781,7 @@ class InteractionController:
         self.rise_side = "none"
         self.pd_decay_prev = 0.0
         self.arming_reference = ()
+        self.arming_grace_count = 0
         gate_event = "ready_enabled" if self.ready_gate else "ready_disabled"
         events.extend(["snap_started", gate_event, "snap_ended"])
         return events
@@ -412,6 +800,7 @@ class InteractionController:
         self.active_frames = 0
         self.rise_side = "none"
         self.arming_reference = ()
+        self.arming_grace_count = 0
         return [f"{reason_label}_ended"]
 
     def update(
@@ -435,12 +824,18 @@ class InteractionController:
 
         if self.state == "arming":
             if eligible == "none":
+                grace_limit = ARMING_GRACE_FRAMES.get(self.candidate, 0)
+                if grace_limit > 0 and self.arming_grace_count < grace_limit:
+                    self.arming_grace_count += 1
+                    return events
                 self.state = "idle"
                 self.candidate = "none"
                 self.arming_count = 0
                 self.arming_started_at = 0.0
                 self.arming_reference = ()
+                self.arming_grace_count = 0
                 return events
+            self.arming_grace_count = 0
 
             if eligible == self.candidate:
                 if self._pose_stable_for_candidate(eligible, signals):
@@ -471,7 +866,10 @@ class InteractionController:
             elif self.active_label == "open":
                 release_condition = signals.open_release
             elif self.active_label == "rise":
-                release_condition = signals.rise_out_for_side(self.rise_side)
+                release_condition = (
+                    self.active_frames > RISE_RELEASE_GRACE_FRAMES
+                    and signals.rise_out_for_side(self.rise_side)
+                )
             elif self.active_label == "prayer":
                 release_condition = not signals.prayer_gate
             elif self.active_label == "breath":
@@ -479,6 +877,11 @@ class InteractionController:
 
             if release_condition:
                 self.missing_count += 1
+                self.rival_candidate = "none"
+                self.rival_count = 0
+                self.rival_started_at = 0.0
+            elif self.active_label in {"open", "rise"}:
+                self.missing_count = 0
                 self.rival_candidate = "none"
                 self.rival_count = 0
                 self.rival_started_at = 0.0
@@ -545,6 +948,22 @@ class InteractionController:
 
         return (0.0, 0.0, 0.0)
 
+    def current_delta_vad(self, signals: RuntimeSignals) -> tuple[float, float, float]:
+        if self.state != "active":
+            return (0.0, 0.0, 0.0)
+        if self.active_label in {"prayer", "breath"}:
+            return (0.0, 0.0, 0.0)
+        return self.current_vad(signals)
+
+    def current_recovery_progress(self) -> float:
+        if self.state != "active":
+            return 0.0
+        if self.active_label == "prayer":
+            return clamp(self.active_frames / PRAYER_FULL_FRAMES, 0.0, 1.0)
+        if self.active_label == "breath":
+            return clamp(self.active_frames / BREATH_FULL_FRAMES, 0.0, 1.0)
+        return 0.0
+
     def vad_source_description(self, signals: RuntimeSignals) -> str:
         if self.state == "arming":
             hold_time = max(0.0, time.time() - self.arming_started_at)
@@ -610,12 +1029,15 @@ def draw_vad_meter(frame: np.ndarray, label: str, value: float, x: int, y: int, 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Realtime kNN inference for interaction3")
     parser.add_argument("--camera", type=int, default=0)
-    parser.add_argument("--model", default="interaction3/models/knn_model_snapgate_v3.joblib")
+    parser.add_argument("--model", default="interaction3/models/knn_model_v3_uncertain.joblib")
     parser.add_argument("--snap-model", default="interaction3/models/snap_model_v1.joblib")
     parser.add_argument("--window-size", type=int, default=10)
     parser.add_argument("--snap-window-size", type=int, default=8)
     parser.add_argument("--vote-size", type=int, default=5)
     parser.add_argument("--send", action="store_true", help="Enable sending data to UE and PD bridges")
+    parser.add_argument("--eeg-result", help="Path to EEG result.json or a job directory that contains result.json")
+    parser.add_argument("--eeg-jobs-root", default="eeg-emotions/artifacts/jobs")
+    parser.add_argument("--eeg-min-valid-window-ratio", type=float, default=0.70)
     args = parser.parse_args()
 
     model_path = Path(args.model)
@@ -625,6 +1047,9 @@ def main() -> None:
     model = load_model(model_path)
     snap_model_path = Path(args.snap_model)
     snap_model = load_model(snap_model_path) if snap_model_path.exists() else None
+    signal_filter = RuntimeSignalFilter()
+    snap_gate_smoother = SnapGateSmoother()
+    rise_side_smoother = RiseSideSmoother()
     cap = cv2.VideoCapture(args.camera)
 
     ue = UEBridge(enabled=args.send)
@@ -654,6 +1079,11 @@ def main() -> None:
     back_counter = 0
     body_mismatch_counter = 0
     last_snap_time = 0.0
+    last_ready_gate_for_prediction = False
+    eeg_base_state = BaseVADState()
+    base_memory_state = BaseMemoryState()
+    world_vad_state = WorldVADState()
+    ready_off_started_at: float | None = None
 
     try:
         while True:
@@ -661,6 +1091,8 @@ def main() -> None:
             if not ok:
                 time.sleep(0.05)
                 continue
+
+            frame_now = time.time()
 
             frame = cv2.flip(frame, 1)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -733,6 +1165,9 @@ def main() -> None:
                     back_counter = 0
                     body_mismatch_counter = 0
                     controller = InteractionController()
+                    snap_gate_smoother = SnapGateSmoother()
+                    rise_side_smoother = RiseSideSmoother()
+                    last_ready_gate_for_prediction = False
                 else:
                     face_present = True
                     if lost_counter > 0 or back_counter > 0 or body_mismatch_counter > 0:
@@ -742,23 +1177,21 @@ def main() -> None:
 
             normalized = None
             signals = RuntimeSignals()
+            raw_snap_gate_side = "none"
+            raw_rise_side = "none"
             if landmarks is not None and face_present:
                 landmarks.update(hand_extractor.extract_keypoints(hand_results))
                 draw_skeleton(frame, landmarks)
                 normalized = normalize_landmarks(landmarks)
                 if normalized is not None:
-                    signals = build_runtime_signals(normalized)
+                    signals = signal_filter.apply(build_runtime_signals(normalized), frame_now)
+                    raw_rise_side = signals.rise_side
+                    signals.rise_side = rise_side_smoother.update(raw_rise_side)
+                    raw_snap_gate_side = signals.snap_gate_side
+                    signals.snap_gate_side = snap_gate_smoother.update(raw_snap_gate_side)
                     frame_features = compute_frame_features(normalized, previous)
                     window.add(frame_features)
-                    snap_side = signals.snap_gate_side
-                    if snap_side == "none":
-                        left_height = signals.left_rise_height
-                        right_height = signals.right_rise_height
-                        if left_height > right_height + 0.05:
-                            snap_side = "left"
-                        elif right_height > left_height + 0.05:
-                            snap_side = "right"
-                    snap_features = compute_snap_frame_features(normalized, previous, snap_side)
+                    snap_features = compute_snap_frame_features(normalized, previous, signals.snap_gate_side)
                     snap_window.add(snap_features)
             else:
                 window.clear()
@@ -772,6 +1205,7 @@ def main() -> None:
 
             snap_event = {
                 "event": False,
+                "raw_event": False,
                 "thumb_index_distance": 0.0,
                 "thumb_index_delta": 0.0,
                 "thumb_middle_distance": 0.0,
@@ -782,27 +1216,40 @@ def main() -> None:
                 "ml_prediction": "waiting",
                 "ml_confidence": 0.0,
             }
+            if normalized is not None:
+                raw_snap_event = detect_snap_event(normalized, previous, signals.snap_gate_side)
+                snap_event.update(
+                    {
+                        "raw_event": bool(raw_snap_event["event"]),
+                        "thumb_index_distance": float(raw_snap_event["thumb_index_distance"]),
+                        "thumb_middle_distance": float(raw_snap_event["thumb_middle_distance"]),
+                        "thumb_index_delta": float(raw_snap_event["thumb_index_delta"]),
+                        "thumb_middle_delta": float(raw_snap_event["thumb_middle_delta"]),
+                        "middle_motion": float(raw_snap_event["middle_motion"]),
+                        "index_extension": float(raw_snap_event["index_extension"]),
+                        "thumb_crossed": bool(raw_snap_event["thumb_crossed"]),
+                    }
+                )
+
             if normalized is not None and snap_model is not None and snap_window.is_ready():
                 snap_vector = snap_window.to_feature_vector().reshape(1, -1)
                 snap_probs = snap_model.predict_proba(snap_vector)[0]
                 snap_confidence = float(np.max(snap_probs))
                 snap_prediction = str(snap_model.predict(snap_vector)[0])
-                snap_event.update(
-                    {
-                        "event": bool(snap_prediction == "snap" and snap_confidence >= 0.5),
-                        "thumb_index_distance": float(snap_vector[0][0]),
-                        "thumb_middle_distance": float(snap_vector[0][1]),
-                        "thumb_index_delta": float(snap_vector[0][2]),
-                        "thumb_middle_delta": float(snap_vector[0][3]),
-                        "middle_motion": float(snap_vector[0][4]),
-                        "index_extension": float(snap_vector[0][6]),
-                        "thumb_crossed": bool(snap_vector[0][11] > 0.5),
-                        "ml_prediction": snap_prediction,
-                        "ml_confidence": snap_confidence,
-                    }
+                snap_event["ml_prediction"] = snap_prediction
+                snap_event["ml_confidence"] = snap_confidence
+                snap_event["event"] = bool(
+                    snap_event["raw_event"]
+                    or (snap_prediction == "snap" and snap_confidence >= 0.5)
                 )
+            else:
+                snap_event["event"] = bool(snap_event["raw_event"])
 
             if face_present and window.is_ready():
+                if controller.ready_gate != last_ready_gate_for_prediction:
+                    recent_predictions.clear()
+                    last_ready_gate_for_prediction = controller.ready_gate
+
                 feature_vector = window.to_feature_vector().reshape(1, -1)
                 expected_dim = getattr(model, "n_features_in_", None)
                 if expected_dim is None and hasattr(model, "named_steps") and "knn" in model.named_steps:
@@ -814,8 +1261,12 @@ def main() -> None:
                     )
 
                 probs = model.predict_proba(feature_vector)[0]
-                max_prob = float(np.max(probs))
-                pred_label = str(model.predict(feature_vector)[0])
+                pred_label, max_prob = masked_prediction_from_probs(
+                    model,
+                    probs,
+                    ready_gate=controller.ready_gate,
+                    threshold=0.5,
+                )
 
                 if max_prob < 0.5:
                     voted_prediction = "uncertain"
@@ -825,12 +1276,58 @@ def main() -> None:
 
                 prediction = voted_prediction
                 snap_event_detected = bool(snap_event["event"])
-                interaction_events = controller.update(voted_prediction, face_present, signals, snap_event_detected, now=time.time())
+                interaction_events = controller.update(voted_prediction, face_present, signals, snap_event_detected, now=frame_now)
             else:
-                interaction_events = controller.update("none", face_present, signals, False, now=time.time())
+                interaction_events = controller.update("none", face_present, signals, False, now=frame_now)
 
-            vad = controller.current_vad(signals)
-            raw_payload = compute_unreal_payload(*vad)
+            eeg_profile = load_eeg_profile(
+                result_path=args.eeg_result,
+                jobs_root=args.eeg_jobs_root,
+                min_valid_window_ratio=args.eeg_min_valid_window_ratio,
+            )
+            eeg_base_state = resolve_base_vad(eeg_profile, previous=eeg_base_state)
+
+            eeg_base_vad = (eeg_base_state.v, eeg_base_state.a, eeg_base_state.d)
+            base_vad = base_memory_state.apply_to(eeg_base_vad)
+            interaction_delta_vad = controller.current_delta_vad(signals)
+            recovery_progress = controller.current_recovery_progress()
+
+            if not world_vad_state.initialized:
+                world_vad_state.set_from_tuple(base_vad)
+
+            if controller.ready_gate:
+                ready_off_started_at = None
+            elif ready_off_started_at is None:
+                ready_off_started_at = frame_now
+
+            if controller.state == "active" and controller.active_label in {"open", "rise"}:
+                active_target = combine_base_and_delta_vad(base_vad, interaction_delta_vad)
+                world_vad_state.set_from_tuple(
+                    blend_triplet(world_vad_state.as_tuple(), active_target, ACTIVE_TARGET_ALPHA)
+                )
+            elif controller.state == "active" and controller.active_label == "prayer":
+                alpha = lerp(PRAYER_RECOVERY_ALPHA_MIN, PRAYER_RECOVERY_ALPHA_MAX, recovery_progress)
+                world_vad_state.set_from_tuple(
+                    blend_triplet(world_vad_state.as_tuple(), base_vad, alpha)
+                )
+            elif controller.state == "active" and controller.active_label == "breath":
+                alpha = lerp(BREATH_RECOVERY_ALPHA_MIN, BREATH_RECOVERY_ALPHA_MAX, recovery_progress)
+                world_vad_state.set_from_tuple(
+                    blend_triplet(world_vad_state.as_tuple(), base_vad, alpha)
+                )
+            elif (
+                not controller.ready_gate
+                and ready_off_started_at is not None
+                and frame_now - ready_off_started_at >= READY_OFF_RECOVERY_DELAY_SECONDS
+            ):
+                recovery_alpha = 1.0 / max(READY_OFF_RECOVERY_DURATION_SECONDS * 30.0, 1.0)
+                world_vad_state.set_from_tuple(
+                    blend_triplet(world_vad_state.as_tuple(), base_vad, recovery_alpha)
+                )
+
+            final_vad = world_vad_state.as_tuple()
+
+            raw_payload = compute_unreal_payload(*final_vad)
             payload = raw_payload.as_dict()
             pd_values, _ = compute_pd_continuous_values(controller, signals, raw_payload)
             vad_source = controller.vad_source_description(signals)
@@ -841,6 +1338,9 @@ def main() -> None:
                     last_snap_time = now
                     gate_state = "READY ON" if controller.ready_gate else "READY OFF"
                     print(f"[{now:.2f}] ML SNAP DETECTED! -> {gate_state}")
+
+            if "ready_disabled" in interaction_events:
+                base_memory_state.learn_from(eeg_base_vad, final_vad)
 
             if args.send:
                 if "ready_enabled" in interaction_events:
@@ -858,11 +1358,17 @@ def main() -> None:
             cv2.putText(frame, f"prediction={prediction}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.putText(frame, f"WORLD TARGET VAD  V={payload['V']:+.2f} A={payload['A']:+.2f} D={payload['D']:+.2f}", (20, 75),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, f"EEG RAW BASE  V={eeg_base_vad[0]:+.2f} A={eeg_base_vad[1]:+.2f} D={eeg_base_vad[2]:+.2f} usable={eeg_base_state.usable} reason={eeg_base_state.reason}", (20, 462),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 200, 120), 2, cv2.LINE_AA)
+            cv2.putText(frame, f"ADAPTIVE BASE  V={base_vad[0]:+.2f} A={base_vad[1]:+.2f} D={base_vad[2]:+.2f} mem=({base_memory_state.dv:+.3f},{base_memory_state.da:+.3f},{base_memory_state.dd:+.3f})", (20, 488),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 220, 160), 2, cv2.LINE_AA)
+            cv2.putText(frame, f"INTERACTION DELTA  V={interaction_delta_vad[0]:+.2f} A={interaction_delta_vad[1]:+.2f} D={interaction_delta_vad[2]:+.2f} rec={recovery_progress:.2f}", (20, 514),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (180, 220, 255), 2, cv2.LINE_AA)
             cv2.putText(frame, f"vad_source={vad_source}", (20, 430),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (120, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(frame, f"UE flower={payload['density']:.2f} decay={payload['decay']:.2f} fountain={payload['min_speed']:.0f}-{payload['max_speed']:.0f}", (20, 456),
+            cv2.putText(frame, f"UE flower={payload['flower']:.2f} tree={payload['tree']:.2f} decay={payload['decay']:.2f} fountain={payload['min_speed']:.0f}-{payload['max_speed']:.0f}", (20, 540),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2, cv2.LINE_AA)
-            cv2.putText(frame, f"PD ready={pd_values['READY_MODE']:.0f} flower={pd_values['FLOWER']:.2f} decay={pd_values['DECAY']:.2f} recover={pd_values['RECOVER']:.2f}", (20, 482),
+            cv2.putText(frame, f"PD ready={pd_values['READY_MODE']:.0f} flower={pd_values['FLOWER']:.2f} decay={pd_values['DECAY']:.2f} recover={pd_values['RECOVER']:.2f}", (20, 566),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 255, 200), 2, cv2.LINE_AA)
             meter_x = max(20, frame.shape[1] - 310)
             draw_vad_meter(frame, "V", payload["V"], meter_x, 42, (80, 220, 255))
@@ -881,18 +1387,18 @@ def main() -> None:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 220, 255), 2, cv2.LINE_AA)
             cv2.putText(frame, f"front_face={tracking_metrics['front_face_count']} head={tracking_metrics['head_count']}", (20, 273),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 220, 255), 2, cv2.LINE_AA)
-            cv2.putText(frame, f"open_ready={signals.open_ready} open_release={signals.open_release} rise_side={signals.rise_side} prayer={signals.prayer_gate} breath={signals.breath_gate} snap_gate={signals.snap_gate_side}",
+            cv2.putText(frame, f"open_ready={signals.open_ready} open_release={signals.open_release} rise_raw={raw_rise_side} rise_side={signals.rise_side} prayer={signals.prayer_gate} breath={signals.breath_gate} snap_gate={signals.snap_gate_side}",
                         (20, 306), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 220, 0), 2, cv2.LINE_AA)
             if normalized is not None:
                 snap_debug = detect_snap_gate(normalized)
                 cv2.putText(
                     frame,
-                    f"snap_event={snap_event_detected} ml={snap_event['ml_prediction']} conf={snap_event['ml_confidence']:.2f} "
+                    f"snap_event={snap_event_detected} raw={snap_event['raw_event']} ml={snap_event['ml_prediction']} conf={snap_event['ml_confidence']:.2f} "
                     f"final_snap={snap_event_detected and signals.snap_gate_side != 'none'} "
                     f"L={snap_debug['left_gate']} R={snap_debug['right_gate']} "
                     f"Lup={snap_debug['left_above']} Rup={snap_debug['right_above']} "
                     f"Lclear={snap_debug['left_clear_side']} Rclear={snap_debug['right_clear_side']} "
-                    f"Lhand={snap_debug['left_has_hand']} Rhand={snap_debug['right_has_hand']}",
+                    f"Lprep={snap_debug['left_prep_contact']} Rprep={snap_debug['right_prep_contact']}",
                     (20, 339),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.52,
@@ -902,7 +1408,8 @@ def main() -> None:
                 )
                 cv2.putText(
                     frame,
-                    f"ready={controller.ready_gate} snap_gate_side={signals.snap_gate_side}",
+                    f"ready={controller.ready_gate} snap_gate_raw={raw_snap_gate_side} snap_gate_side={signals.snap_gate_side} "
+                    f"Ltm={snap_debug['left_thumb_middle_distance']:.3f} Rtm={snap_debug['right_thumb_middle_distance']:.3f}",
                     (20, 368),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.52,

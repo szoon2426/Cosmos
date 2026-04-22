@@ -16,6 +16,7 @@ if __package__ in (None, ""):
         SlidingWindowBuffer,
         compute_frame_features,
         compute_snap_frame_features,
+        detect_snap_event,
         detect_snap_gate,
         normalize_landmarks,
     )
@@ -28,16 +29,19 @@ if __package__ in (None, ""):
         PRAYER_FULL_FRAMES,
         RISE_HEIGHT_SCALE,
         InteractionController,
+        SnapGateSmoother,
         build_runtime_signals,
         clamp,
         compute_tracking_metrics,
         draw_skeleton,
+        masked_prediction_from_probs,
     )
 else:
     from .feature_engineering import (
         SlidingWindowBuffer,
         compute_frame_features,
         compute_snap_frame_features,
+        detect_snap_event,
         detect_snap_gate,
         normalize_landmarks,
     )
@@ -50,10 +54,12 @@ else:
         PRAYER_FULL_FRAMES,
         RISE_HEIGHT_SCALE,
         InteractionController,
+        SnapGateSmoother,
         build_runtime_signals,
         clamp,
         compute_tracking_metrics,
         draw_skeleton,
+        masked_prediction_from_probs,
     )
 
 
@@ -168,7 +174,9 @@ def main() -> None:
     previous = None
     recent_predictions: deque[str] = deque(maxlen=args.vote_size)
     controller = InteractionController()
+    snap_gate_smoother = SnapGateSmoother()
     progress = Stage4Progress()
+    last_ready_gate_for_prediction = False
     face_history: deque[bool] = deque(maxlen=5)
     tracking_locked = False
     tracking_state = "searching"
@@ -255,11 +263,14 @@ def main() -> None:
                     back_counter = 0
                     drift_counter = 0
                     controller = InteractionController(ready_gate=controller.ready_gate)
+                    snap_gate_smoother = SnapGateSmoother()
+                    last_ready_gate_for_prediction = controller.ready_gate
                 else:
                     face_present = True
                     tracking_state = "lost_pending" if (lost_counter > 0 or back_counter > 0 or drift_counter > 0) else "locked"
 
             signals = build_runtime_signals({}) if False else None
+            raw_snap_gate_side = "none"
             if landmarks is not None:
                 landmarks.update(hand_extractor.extract_keypoints(hand_results))
                 draw_skeleton(frame, landmarks)
@@ -267,15 +278,11 @@ def main() -> None:
             normalized = normalize_landmarks(landmarks) if landmarks is not None else None
             if normalized is not None and face_present:
                 signals = build_runtime_signals(normalized)
+                raw_snap_gate_side = signals.snap_gate_side
+                signals.snap_gate_side = snap_gate_smoother.update(raw_snap_gate_side)
                 frame_features = compute_frame_features(normalized, previous)
                 window.add(frame_features)
-                snap_side = signals.snap_gate_side
-                if snap_side == "none":
-                    if signals.left_rise_height > signals.right_rise_height + 0.05:
-                        snap_side = "left"
-                    elif signals.right_rise_height > signals.left_rise_height + 0.05:
-                        snap_side = "right"
-                snap_features = compute_snap_frame_features(normalized, previous, snap_side)
+                snap_features = compute_snap_frame_features(normalized, previous, signals.snap_gate_side)
                 snap_window.add(snap_features)
             else:
                 window.clear()
@@ -298,6 +305,7 @@ def main() -> None:
             snap_event_detected = False
             snap_event = {
                 "event": False,
+                "raw_event": False,
                 "thumb_index_distance": 0.0,
                 "thumb_index_delta": 0.0,
                 "thumb_middle_distance": 0.0,
@@ -308,6 +316,21 @@ def main() -> None:
                 "ml_prediction": "waiting",
                 "ml_confidence": 0.0,
             }
+            if normalized is not None:
+                raw_snap_event = detect_snap_event(normalized, previous, signals.snap_gate_side)
+                snap_event.update(
+                    {
+                        "raw_event": bool(raw_snap_event["event"]),
+                        "thumb_index_distance": float(raw_snap_event["thumb_index_distance"]),
+                        "thumb_middle_distance": float(raw_snap_event["thumb_middle_distance"]),
+                        "thumb_index_delta": float(raw_snap_event["thumb_index_delta"]),
+                        "thumb_middle_delta": float(raw_snap_event["thumb_middle_delta"]),
+                        "middle_motion": float(raw_snap_event["middle_motion"]),
+                        "index_extension": float(raw_snap_event["index_extension"]),
+                        "thumb_crossed": bool(raw_snap_event["thumb_crossed"]),
+                    }
+                )
+
             if normalized is not None and snap_model is not None and snap_window.is_ready():
                 snap_vector = snap_window.to_feature_vector().reshape(1, -1)
                 snap_probs = snap_model.predict_proba(snap_vector)[0]
@@ -315,25 +338,30 @@ def main() -> None:
                 snap_prediction = str(snap_model.predict(snap_vector)[0])
                 snap_event.update(
                     {
-                        "event": bool(snap_prediction == "snap" and snap_confidence >= 0.5),
-                        "thumb_index_distance": float(snap_vector[0][0]),
-                        "thumb_middle_distance": float(snap_vector[0][1]),
-                        "thumb_index_delta": float(snap_vector[0][2]),
-                        "thumb_middle_delta": float(snap_vector[0][3]),
-                        "middle_motion": float(snap_vector[0][4]),
-                        "index_extension": float(snap_vector[0][6]),
-                        "thumb_crossed": bool(snap_vector[0][11] > 0.5),
                         "ml_prediction": snap_prediction,
                         "ml_confidence": snap_confidence,
                     }
                 )
+                snap_event["event"] = bool(
+                    snap_event["raw_event"]
+                    or (snap_prediction == "snap" and snap_confidence >= 0.5)
+                )
+            else:
+                snap_event["event"] = bool(snap_event["raw_event"])
 
             if face_present and window.is_ready():
+                if controller.ready_gate != last_ready_gate_for_prediction:
+                    recent_predictions.clear()
+                    last_ready_gate_for_prediction = controller.ready_gate
+
                 feature_vector = window.to_feature_vector().reshape(1, -1)
                 probs = model.predict_proba(feature_vector)[0]
-                max_prob = float(max(probs))
-                pred_label = str(model.predict(feature_vector)[0])
-
+                pred_label, max_prob = masked_prediction_from_probs(
+                    model,
+                    probs,
+                    ready_gate=controller.ready_gate,
+                    threshold=0.5,
+                )
                 if max_prob < 0.5:
                     prediction = "uncertain"
                 else:
@@ -361,12 +389,12 @@ def main() -> None:
                 snap_debug = detect_snap_gate(normalized)
                 cv2.putText(
                     frame,
-                    f"snap_event={snap_event_detected} ml={snap_event['ml_prediction']} conf={snap_event['ml_confidence']:.2f} "
+                    f"snap_event={snap_event_detected} raw={snap_event['raw_event']} ml={snap_event['ml_prediction']} conf={snap_event['ml_confidence']:.2f} "
                     f"final_snap={snap_event_detected and signals.snap_gate_side != 'none'} "
                     f"L={snap_debug['left_gate']} R={snap_debug['right_gate']} "
                     f"Lup={snap_debug['left_above']} Rup={snap_debug['right_above']} "
                     f"Lclear={snap_debug['left_clear_side']} Rclear={snap_debug['right_clear_side']} "
-                    f"Lhand={snap_debug['left_has_hand']} Rhand={snap_debug['right_has_hand']}",
+                    f"Lprep={snap_debug['left_prep_contact']} Rprep={snap_debug['right_prep_contact']}",
                     (20, 190),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.52,
@@ -376,11 +404,22 @@ def main() -> None:
                 )
                 cv2.putText(
                     frame,
+                    f"ready={controller.ready_gate} snap_gate_raw={raw_snap_gate_side} snap_gate_side={signals.snap_gate_side} "
+                    f"Ltm={snap_debug['left_thumb_middle_distance']:.3f} Rtm={snap_debug['right_thumb_middle_distance']:.3f}",
+                    (20, 218),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (180, 220, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame,
                     f"ti={snap_event['thumb_index_distance']:.3f} tid={snap_event['thumb_index_delta']:.3f} "
                     f"tm={snap_event['thumb_middle_distance']:.3f} tmd={snap_event['thumb_middle_delta']:.3f} "
                     f"midmv={snap_event['middle_motion']:.3f} crossed={snap_event['thumb_crossed']} "
                     f"ext={snap_event['index_extension']:.3f}",
-                    (20, 218),
+                    (20, 246),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.52,
                     (180, 220, 255),
