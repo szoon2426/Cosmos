@@ -9,15 +9,15 @@ else:
 
 
 READY_HOLD_SECONDS = 0.7
-ACTIVE_INDEX_LOSS_GRACE_SECONDS = 0.6
-ACTIVE_TRACKING_LOSS_SECONDS = 1.0
+ACTIVE_FIST_HOLD_SECONDS = 0.6
+ACTIVE_TRACKING_LOSS_SECONDS = 3.0
 
 
 @dataclass(slots=True)
 class ConductSession:
     mode: str = "idle"
     ready_started_at: float | None = None
-    index_missing_started_at: float | None = None
+    fist_started_at: float | None = None
     tracking_missing_started_at: float | None = None
     active_started_at: float | None = None
     base_right_index_x: float = 0.0
@@ -30,7 +30,7 @@ class ConductSession:
     def _enter_active(self, features: ConductFeatures, now: float) -> list[str]:
         self.mode = "conduct_active"
         self.active_started_at = now
-        self.index_missing_started_at = None
+        self.fist_started_at = None
         self.tracking_missing_started_at = None
         self.base_right_index_x = features.right_index_x
         self.base_right_index_y = features.right_index_y
@@ -40,7 +40,7 @@ class ConductSession:
     def _exit_active(self) -> list[str]:
         self.mode = "idle"
         self.ready_started_at = None
-        self.index_missing_started_at = None
+        self.fist_started_at = None
         self.tracking_missing_started_at = None
         self.active_started_at = None
         return ["ready_disabled", "conduct_stopped"]
@@ -74,22 +74,22 @@ class ConductSession:
             else:
                 self.tracking_missing_started_at = None
 
-            if not features.right_index_raised:
-                if self.index_missing_started_at is None:
-                    self.index_missing_started_at = now
+            if features.right_fist_closed:
+                if self.fist_started_at is None:
+                    self.fist_started_at = now
             else:
-                self.index_missing_started_at = None
+                self.fist_started_at = None
 
             lost_tracking = (
                 self.tracking_missing_started_at is not None
                 and (now - self.tracking_missing_started_at) >= ACTIVE_TRACKING_LOSS_SECONDS
             )
-            lowered_index = (
-                self.index_missing_started_at is not None
-                and (now - self.index_missing_started_at) >= ACTIVE_INDEX_LOSS_GRACE_SECONDS
+            fist_exit = (
+                self.fist_started_at is not None
+                and (now - self.fist_started_at) >= ACTIVE_FIST_HOLD_SECONDS
             )
 
-            if lost_tracking or lowered_index:
+            if lost_tracking or fist_exit:
                 return self._exit_active()
 
         return events

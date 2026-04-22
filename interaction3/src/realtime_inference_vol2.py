@@ -250,7 +250,7 @@ def main() -> None:
             )
             cv2.putText(
                 frame,
-                f"right_index_raised={smoothed_features.right_index_raised} right_visible={smoothed_features.right_hand_visible} left_visible={smoothed_features.left_hand_visible}",
+                f"right_index_raised={smoothed_features.right_index_raised} right_fist={smoothed_features.right_fist_closed} right_visible={smoothed_features.right_hand_visible} left_visible={smoothed_features.left_hand_visible}",
                 (20, 107),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
