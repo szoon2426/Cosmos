@@ -18,7 +18,7 @@ if __package__ in (None, ""):
     from hand_extractor import HandExtractor
     from pd_bridge import PDBridge
     from pose_extractor import PoseExtractor
-    from realtime_inference import draw_skeleton, draw_vad_meter
+    from realtime_inference import OneEuroFilter, draw_skeleton, draw_vad_meter
     from ue_bridge import UEBridge
     from vad_mapper import compute_unreal_payload
 else:
@@ -30,7 +30,7 @@ else:
     from .hand_extractor import HandExtractor
     from .pd_bridge import PDBridge
     from .pose_extractor import PoseExtractor
-    from .realtime_inference import draw_skeleton, draw_vad_meter
+    from .realtime_inference import OneEuroFilter, draw_skeleton, draw_vad_meter
     from .ue_bridge import UEBridge
     from .vad_mapper import compute_unreal_payload
 
@@ -59,6 +59,50 @@ def blend_triplet(
         lerp(current[1], target[1], alpha),
         lerp(current[2], target[2], alpha),
     )
+
+
+def remap_clamped(value: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
+    if in_max == in_min:
+        return out_min
+    t = clamp((value - in_min) / (in_max - in_min), 0.0, 1.0)
+    return out_min + (out_max - out_min) * t
+
+
+@dataclass(slots=True)
+class PointerState:
+    active: float = 0.0
+    x: float = 0.5
+    y: float = 0.5
+    speed: float = 0.0
+    strength: float = 0.0
+
+
+class PointerFilter:
+    def __init__(self) -> None:
+        self.x_filter = OneEuroFilter(min_cutoff=1.2, beta=0.25, d_cutoff=1.0)
+        self.y_filter = OneEuroFilter(min_cutoff=1.2, beta=0.25, d_cutoff=1.0)
+        self.last_x: float | None = None
+        self.last_y: float | None = None
+        self.last_time: float | None = None
+
+    def apply(self, active: bool, raw_x: float, raw_y: float, now: float) -> PointerState:
+        if not active:
+            return PointerState(active=0.0, x=self.last_x or 0.5, y=self.last_y or 0.5)
+
+        filtered_x = self.x_filter.apply(raw_x, now)
+        filtered_y = self.y_filter.apply(raw_y, now)
+
+        speed = 0.0
+        if self.last_x is not None and self.last_y is not None and self.last_time is not None:
+            dt = max(now - self.last_time, 1e-3)
+            distance = ((filtered_x - self.last_x) ** 2 + (filtered_y - self.last_y) ** 2) ** 0.5
+            speed = clamp(distance / dt / 2.5, 0.0, 1.0)
+
+        self.last_x = filtered_x
+        self.last_y = filtered_y
+        self.last_time = now
+        strength = clamp(0.45 + speed * 0.55, 0.0, 1.0)
+        return PointerState(active=1.0, x=filtered_x, y=filtered_y, speed=speed, strength=strength)
 
 
 @dataclass(slots=True)
@@ -108,6 +152,8 @@ class ConductSmoother:
         self.right_x = EmaValue(0.22)
         self.right_y = EmaValue(0.22)
         self.left_open = EmaValue(0.18)
+        self.last_left_open_valid = False
+        self.last_left_open = 0.0
 
     def apply(self, features: ConductFeatures) -> ConductFeatures:
         smoothed = replace(features)
@@ -116,6 +162,11 @@ class ConductSmoother:
             smoothed.right_index_y = self.right_y.apply(features.right_index_y)
         if features.left_hand_open_valid:
             smoothed.left_hand_open = self.left_open.apply(features.left_hand_open)
+            self.last_left_open = smoothed.left_hand_open
+            self.last_left_open_valid = True
+        elif self.last_left_open_valid:
+            smoothed.left_hand_open = self.last_left_open
+            smoothed.left_hand_open_valid = True
         return smoothed
 
 
@@ -155,6 +206,8 @@ def main() -> None:
     previous_frame_time = time.time()
     conduct_debug = ConductDebug()
     smoothed_features = ConductFeatures()
+    pointer_filter = PointerFilter()
+    pointer_state = PointerState()
     ready_off_started_at: float | None = None
 
     try:
@@ -218,7 +271,23 @@ def main() -> None:
                     recovery_alpha = 1.0 / max(READY_OFF_RECOVERY_DURATION_SECONDS * 30.0, 1.0)
                     world_vad = blend_triplet(world_vad, base_vad, recovery_alpha)
 
-            raw_payload = compute_unreal_payload(*world_vad)
+            pointer_raw_x = remap_clamped(smoothed_features.right_index_x, -1.25, 1.25, 0.0, 1.0)
+            pointer_raw_y = remap_clamped(smoothed_features.right_index_y, -1.05, 1.35, 1.0, 0.0)
+            pointer_state = pointer_filter.apply(
+                active=session.is_active() and smoothed_features.right_hand_visible,
+                raw_x=pointer_raw_x,
+                raw_y=pointer_raw_y,
+                now=now,
+            )
+
+            raw_payload = compute_unreal_payload(
+                *world_vad,
+                pointer_active=pointer_state.active,
+                pointer_x=pointer_state.x,
+                pointer_y=pointer_state.y,
+                pointer_speed=pointer_state.speed,
+                pointer_strength=pointer_state.strength,
+            )
             payload = raw_payload.as_dict()
 
             if args.send:
@@ -335,6 +404,16 @@ def main() -> None:
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.58,
                 (200, 255, 200),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                f"Pointer active={payload['pointer_active']:.0f} x={payload['pointer_x']:.2f} y={payload['pointer_y']:.2f} speed={payload['pointer_speed']:.2f} strength={payload['pointer_strength']:.2f}",
+                (20, 560),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (180, 220, 255),
                 2,
                 cv2.LINE_AA,
             )
