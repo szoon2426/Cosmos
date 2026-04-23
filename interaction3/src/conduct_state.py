@@ -74,7 +74,7 @@ class ConductSession:
             else:
                 self.tracking_missing_started_at = None
 
-            if features.right_fist_closed:
+            if features.right_fist_closed and not features.right_index_raised:
                 if self.fist_started_at is None:
                     self.fist_started_at = now
             else:
