@@ -250,7 +250,7 @@ def main() -> None:
             )
             cv2.putText(
                 frame,
-                f"right_index_raised={smoothed_features.right_index_raised} right_fist={smoothed_features.right_fist_closed} right_visible={smoothed_features.right_hand_visible} left_visible={smoothed_features.left_hand_visible}",
+                f"right_index_raised={smoothed_features.right_index_raised} right_fist={smoothed_features.right_fist_closed}/{smoothed_features.right_fist_score:.2f} right_visible={smoothed_features.right_hand_visible} left_visible={smoothed_features.left_hand_visible}",
                 (20, 107),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -280,7 +280,7 @@ def main() -> None:
             )
             cv2.putText(
                 frame,
-                f"left_open={smoothed_features.left_hand_open:.3f} base_left_open={session.base_left_hand_open:.3f} delta_open={conduct_debug.left_delta_open:+.3f} d_vel={conduct_debug.d_velocity:+.3f}",
+                f"left_open={smoothed_features.left_hand_open:.3f} base_left_open={session.base_left_hand_open:.3f} delta_open={conduct_debug.left_delta_open:+.3f} left_fist={smoothed_features.left_fist_closed}/{smoothed_features.left_fist_score:.2f} d_vel={conduct_debug.d_velocity:+.3f}",
                 (20, 206),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.56,

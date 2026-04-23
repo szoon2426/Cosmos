@@ -65,12 +65,15 @@ def compute_conduct_vad(
     else:
         debug.left_delta_open = 0.0
 
-    abs_delta = abs(debug.left_delta_open)
-    if abs_delta < 0.08:
-        debug.d_velocity = 0.0
+    if features.left_fist_closed:
+        debug.d_velocity = -1.0
     else:
-        speed = remap_clamped(abs_delta, 0.08, 0.35, 0.0, 1.0)
-        debug.d_velocity = speed if debug.left_delta_open > 0.0 else -speed
+        abs_delta = abs(debug.left_delta_open)
+        if abs_delta < 0.08:
+            debug.d_velocity = 0.0
+        else:
+            speed = remap_clamped(abs_delta, 0.08, 0.35, 0.0, 1.0)
+            debug.d_velocity = speed if debug.left_delta_open > 0.0 else -speed
 
     debug.d_target = clamp(current_world_vad[2] + debug.d_velocity * 0.75 * max(dt, 0.0), -1.0, 1.0)
 

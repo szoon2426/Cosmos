@@ -21,6 +21,7 @@ class ConductFeatures:
     left_hand_visible: bool = False
     right_index_raised: bool = False
     right_fist_closed: bool = False
+    right_fist_score: float = 0.0
     right_index_x: float = 0.0
     right_index_y: float = 0.0
     right_palm_ref: float = 0.0
@@ -30,6 +31,8 @@ class ConductFeatures:
     right_pinky_extension: float = 0.0
     left_hand_open_valid: bool = False
     left_hand_open: float = 0.0
+    left_fist_closed: bool = False
+    left_fist_score: float = 0.0
     left_palm_ref: float = 0.0
 
 
@@ -116,7 +119,7 @@ def _index_raise_score(normalized_landmarks: dict[str, np.ndarray], side: str) -
     )
 
 
-def _fist_closed_score(normalized_landmarks: dict[str, np.ndarray], side: str) -> tuple[bool, float]:
+def _fist_closed_score(normalized_landmarks: dict[str, np.ndarray], side: str) -> tuple[bool, float, float]:
     required = (
         f"{side}_HAND_INDEX_MCP",
         f"{side}_HAND_INDEX_TIP",
@@ -130,7 +133,7 @@ def _fist_closed_score(normalized_landmarks: dict[str, np.ndarray], side: str) -
         f"{side}_HAND_WRIST",
     )
     if any(key not in normalized_landmarks for key in required):
-        return (False, 0.0)
+        return (False, 0.0, 0.0)
 
     wrist = normalized_landmarks[f"{side}_HAND_WRIST"]
     thumb_tip = normalized_landmarks[f"{side}_HAND_THUMB_TIP"]
@@ -150,14 +153,20 @@ def _fist_closed_score(normalized_landmarks: dict[str, np.ndarray], side: str) -
     pinky_extension = _distance(pinky_tip, pinky_mcp) / palm_ref
     thumb_to_wrist = _distance(thumb_tip, wrist) / palm_ref
 
+    extensions = [index_extension, middle_extension, ring_extension, pinky_extension]
+    folded_count = sum(1 for value in extensions if value < 0.86)
+    compact_count = sum(1 for value in extensions if value < 1.02)
+    avg_extension = _avg(extensions)
+    extension_score = 1.0 - min(max((avg_extension - 0.58) / 0.62, 0.0), 1.0)
+    folded_score = folded_count / 4.0
+    thumb_score = 1.0 if thumb_to_wrist < 1.85 else 0.0
+    fist_score = 0.55 * folded_score + 0.35 * extension_score + 0.10 * thumb_score
+
     closed = bool(
-        index_extension < 0.72
-        and middle_extension < 0.72
-        and ring_extension < 0.72
-        and pinky_extension < 0.72
-        and thumb_to_wrist < 1.65
+        (folded_count >= 3 and compact_count >= 4)
+        or fist_score >= 0.62
     )
-    return (closed, palm_ref)
+    return (closed, fist_score, palm_ref)
 
 
 def compute_conduct_features(normalized_landmarks: dict[str, np.ndarray]) -> ConductFeatures:
@@ -181,13 +190,14 @@ def compute_conduct_features(normalized_landmarks: dict[str, np.ndarray]) -> Con
         features.right_ring_extension,
         features.right_pinky_extension,
     ) = _index_raise_score(normalized_landmarks, control_side)
-    features.right_fist_closed, _ = _fist_closed_score(normalized_landmarks, control_side)
+    features.right_fist_closed, features.right_fist_score, _ = _fist_closed_score(normalized_landmarks, control_side)
 
     (
         features.left_hand_open_valid,
         features.left_hand_open,
         features.left_palm_ref,
     ) = _hand_open_score(normalized_landmarks, support_side)
+    features.left_fist_closed, features.left_fist_score, _ = _fist_closed_score(normalized_landmarks, support_side)
     features.left_hand_visible = bool(features.left_hand_open_valid)
 
     return features
