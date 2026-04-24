@@ -77,9 +77,14 @@ def compute_conduct_vad(
 
     debug.d_target = clamp(current_world_vad[2] + debug.d_velocity * 0.75 * max(dt, 0.0), -1.0, 1.0)
 
+    v_gap = abs(debug.v_target - current_world_vad[0])
+    a_gap = abs(debug.a_target - current_world_vad[1])
+    v_alpha = remap_clamped(v_gap, 0.04, 0.90, 0.22, 0.72)
+    a_alpha = remap_clamped(a_gap, 0.04, 0.90, 0.22, 0.72)
+
     next_vad = (
-        blend(current_world_vad[0], debug.v_target, 0.18),
-        blend(current_world_vad[1], debug.a_target, 0.18),
+        blend(current_world_vad[0], debug.v_target, v_alpha),
+        blend(current_world_vad[1], debug.a_target, a_alpha),
         debug.d_target,
     )
     return next_vad, debug
