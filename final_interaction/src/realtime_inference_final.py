@@ -13,11 +13,13 @@ if __package__ in (None, ""):
     from final_mapper import compute_final_payload
     from final_ue_bridge import FinalUEBridge
     from hand_extractor import HandExtractor
+    from pose_extractor import PoseExtractor
 else:
     from .final_hand_features import FinalHandTracker
     from .final_mapper import compute_final_payload
     from .final_ue_bridge import FinalUEBridge
     from .hand_extractor import HandExtractor
+    from .pose_extractor import PoseExtractor
 
 
 def draw_hand_overlay(frame, hand_results) -> None:
@@ -50,6 +52,7 @@ def main() -> None:
         sys.exit(1)
 
     hand_extractor = HandExtractor()
+    pose_extractor = PoseExtractor()
     tracker = FinalHandTracker(control_hand=args.control_hand.upper())
     ue = FinalUEBridge(enabled=args.send)
     ue.start()
@@ -64,8 +67,10 @@ def main() -> None:
             now = time.time()
             frame = cv2.flip(frame, 1)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pose_results = pose_extractor.process(frame_rgb)
+            pose_landmarks = pose_extractor.extract_upper_body(pose_results)
             hand_results = hand_extractor.process(frame_rgb)
-            features = tracker.update(hand_results, now)
+            features = tracker.update(hand_results, pose_landmarks, now)
             payload = compute_final_payload(features)
 
             if args.send:
@@ -75,10 +80,21 @@ def main() -> None:
             h, w = frame.shape[:2]
             cx = int(payload.hand_x * w)
             cy = int(payload.hand_y * h)
-            color = (70, 240, 160) if payload.grab_active > 0.5 else (255, 210, 120)
-            radius = max(10, int(18 + payload.palm_radius * 28))
-            cv2.circle(frame, (cx, cy), radius, color, 2, cv2.LINE_AA)
-            cv2.circle(frame, (cx, cy), max(4, radius // 5), color, -1, cv2.LINE_AA)
+            if features.visible:
+                color = (70, 240, 160) if payload.grab_active > 0.5 else (255, 210, 120)
+                radius = max(10, int(18 + payload.palm_radius * 28))
+                cv2.circle(frame, (cx, cy), radius, color, 2, cv2.LINE_AA)
+                cv2.circle(frame, (cx, cy), max(4, radius // 5), color, -1, cv2.LINE_AA)
+                cv2.putText(
+                    frame,
+                    "CONTROL",
+                    (cx + 10, cy + radius + 18),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
 
             cv2.putText(
                 frame,
@@ -112,7 +128,7 @@ def main() -> None:
             )
             cv2.putText(
                 frame,
-                f"grab_active={bool(payload.grab_active)} radius={payload.palm_radius:.2f} distortion={payload.distortion_strength:.2f}",
+                f"grab_active={bool(payload.grab_active)} pose_fallback={features.pose_fallback} radius={payload.palm_radius:.2f} distortion={payload.distortion_strength:.2f}",
                 (20, 136),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.62,
@@ -129,6 +145,7 @@ def main() -> None:
         cap.release()
         cv2.destroyAllWindows()
         hand_extractor.close()
+        pose_extractor.close()
         ue.stop()
 
 
