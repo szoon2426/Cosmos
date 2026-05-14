@@ -95,11 +95,11 @@ class FinalHandTracker:
         self.x_filter = OneEuroFilter(min_cutoff=0.85, beta=0.45)
         self.y_filter = OneEuroFilter(min_cutoff=0.85, beta=0.45)
         self.z_filter = OneEuroFilter(min_cutoff=0.95, beta=0.50)
-        self.open_filter = OneEuroFilter(min_cutoff=1.10, beta=0.08)
+        self.open_filter = OneEuroFilter(min_cutoff=1.65, beta=0.18)
         self.grab_filter = OneEuroFilter(min_cutoff=1.10, beta=0.08)
         self.radius_filter = OneEuroFilter(min_cutoff=0.95, beta=0.06)
         self.grace_seconds = 0.22
-        self.grab_hold_seconds = 0.28
+        self.grab_hold_seconds = 0.18
 
         self.last_filtered_xyz: tuple[float, float, float] | None = None
         self.last_speed_time: float | None = None
@@ -164,12 +164,12 @@ class FinalHandTracker:
 
         # Open hand is much easier to observe than a closed fist.
         # When the hand is clearly not open, use that as a strong grab prior.
-        inverse_open_grab = 1.0 - remap_clamped(filtered_open, 0.18, 0.70, 0.0, 1.0)
-        filtered_grab = max(filtered_grab, inverse_open_grab * 0.92)
+        inverse_open_grab = 1.0 - remap_clamped(filtered_open, 0.16, 0.58, 0.0, 1.0)
+        filtered_grab = max(filtered_grab, inverse_open_grab * 0.82)
 
-        if pose_support is not None and filtered_open <= 0.38 and filtered_grab < 0.60:
-            pose_boost = remap_clamped(pose_support[2], 0.0, 1.0, 0.08, 0.26)
-            close_bonus = remap_clamped(0.38 - filtered_open, 0.0, 0.38, 0.0, 0.18)
+        if pose_support is not None and filtered_open <= 0.34 and filtered_grab < 0.62:
+            pose_boost = remap_clamped(pose_support[2], 0.0, 1.0, 0.06, 0.22)
+            close_bonus = remap_clamped(0.34 - filtered_open, 0.0, 0.34, 0.0, 0.14)
             filtered_grab = clamp(max(filtered_grab, filtered_grab + pose_boost + close_bonus), 0.0, 1.0)
             pose_fallback = True
 
@@ -185,19 +185,19 @@ class FinalHandTracker:
         self.last_filtered_xyz = (filtered_x, filtered_y, filtered_z)
         self.last_speed_time = now
 
-        grab_active = filtered_grab >= 0.58 and filtered_open <= 0.52
+        grab_active = filtered_grab >= 0.85 and filtered_open <= 0.42
         if grab_active:
             self.last_grab_time = now
         elif (
             self.last_grab_time is not None
             and now - self.last_grab_time <= self.grab_hold_seconds
-            and filtered_open <= 0.56
+            and filtered_open <= 0.46
         ):
             grab_active = True
         else:
             self.last_grab_time = None
 
-        if filtered_open >= 0.64:
+        if filtered_open >= 0.66:
             grab_active = False
             filtered_grab = min(filtered_grab, 0.42)
             self.last_grab_time = None
