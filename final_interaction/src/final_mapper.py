@@ -7,8 +7,11 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
+def remap(value: float, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
+    if in_max == in_min:
+        return out_min
+    t = (value - in_min) / (in_max - in_min)
+    return out_min + (out_max - out_min) * t
 
 
 @dataclass(slots=True)
@@ -19,9 +22,11 @@ class FinalInteractionPayload:
     target_v: float
     target_a: float
     target_d: float
+    decay: float
+    density: float
+    min_speed: float
+    max_speed: float
     grab_active: float
-    open_strength: float
-    grab_strength: float
     switch_to_camera: float
 
     def as_preset_properties(self) -> dict[str, float]:
@@ -32,9 +37,11 @@ class FinalInteractionPayload:
             "Target V": self.target_v,
             "Target A": self.target_a,
             "Target D": self.target_d,
+            "Density": self.density,
+            "Decay Amount": self.decay,
+            "Min Speed": self.min_speed,
+            "Max Speed": self.max_speed,
             "Grab Active": self.grab_active,
-            "Open Strength": self.open_strength,
-            "Grab Strength": self.grab_strength,
             "Switch To Camera": self.switch_to_camera,
         }
 
@@ -52,15 +59,26 @@ def compute_final_payload(
     grab_strength: float,
     switch_to_camera: bool,
 ) -> FinalInteractionPayload:
+    target_v = clamp(target_v, -1.0, 1.0)
+    target_a = clamp(target_a, -1.0, 1.0)
+    target_d = clamp(target_d, -1.0, 1.0)
+
+    decay = clamp(0.5 - 0.3 * target_v + 0.3 * target_a, 0.0, 1.2)
+    density = clamp(remap(0.5 * target_v + 0.5 * target_d, -1.0, 1.0, 0.4, 1.0), 0.4, 1.0)
+    min_speed = clamp(remap(target_a, -1.0, 1.0, 0.0, 580.0), 0.0, 600.0)
+    max_speed = clamp(min_speed + 20.0, 0.0, 600.0)
+
     return FinalInteractionPayload(
         interaction_active=1.0 if interaction_active else 0.0,
         pointer_x=clamp(pointer_x, -1.0, 1.5),
         pointer_y=clamp(pointer_y, -1.0, 1.5),
-        target_v=clamp(target_v, -1.0, 1.0),
-        target_a=clamp(target_a, -1.0, 1.0),
-        target_d=clamp(target_d, -1.0, 1.0),
+        target_v=target_v,
+        target_a=target_a,
+        target_d=target_d,
+        decay=decay,
+        density=density,
+        min_speed=min_speed,
+        max_speed=max_speed,
         grab_active=1.0 if grab_active else 0.0,
-        open_strength=clamp(open_strength, 0.0, 1.0),
-        grab_strength=clamp(grab_strength, 0.0, 1.0),
         switch_to_camera=1.0 if switch_to_camera else 0.0,
     )
