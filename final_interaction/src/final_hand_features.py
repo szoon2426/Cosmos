@@ -77,6 +77,10 @@ class FinalHandFeatures:
     speed: float = 0.0
     palm_radius: float = 0.0
     pose_fallback: bool = False
+    index_ratio: float = 0.0
+    middle_ratio: float = 0.0
+    ring_ratio: float = 0.0
+    pinky_ratio: float = 0.0
 
 
 class FinalHandTracker:
@@ -136,6 +140,10 @@ class FinalHandTracker:
                     speed=self.last_features.speed * (1.0 - grace_t),
                     palm_radius=self.last_features.palm_radius,
                     pose_fallback=fallback_xy is not None,
+                    index_ratio=self.last_features.index_ratio,
+                    middle_ratio=self.last_features.middle_ratio,
+                    ring_ratio=self.last_features.ring_ratio,
+                    pinky_ratio=self.last_features.pinky_ratio,
                 )
 
             self.last_features = None
@@ -145,14 +153,12 @@ class FinalHandTracker:
         points = {idx: (landmarks[idx].x, landmarks[idx].y) for idx in (0, 4, 5, 8, 9, 12, 13, 16, 17, 20)}
 
         center = self._compute_center(points)
-        ref_scale = max(
-            0.03,
-            0.5 * (distance(points[5], points[17]) + distance(points[0], points[9])),
-        )
-        open_strength = self._compute_open_strength(points, center, ref_scale)
-        grab_strength = self._compute_grab_strength(points, center, ref_scale)
-        palm_radius = clamp(remap_clamped(ref_scale, 0.04, 0.18, 0.0, 1.0), 0.0, 1.0)
-        pseudo_depth = clamp(remap_clamped(ref_scale, 0.05, 0.18, -1.0, 1.0), -1.0, 1.0)
+        palm_ref = self._compute_palm_ref(points)
+        extension_ratios = self._compute_extension_ratios(points)
+        open_strength = self._compute_open_strength(points, extension_ratios)
+        grab_strength = self._compute_grab_strength(points, extension_ratios)
+        palm_radius = clamp(remap_clamped(palm_ref, 0.035, 0.12, 0.0, 1.0), 0.0, 1.0)
+        pseudo_depth = clamp(remap_clamped(palm_ref, 0.04, 0.14, -1.0, 1.0), -1.0, 1.0)
 
         filtered_x = self.x_filter.apply(center[0], now)
         filtered_y = self.y_filter.apply(center[1], now)
@@ -214,6 +220,10 @@ class FinalHandTracker:
             speed=speed,
             palm_radius=filtered_radius,
             pose_fallback=pose_fallback,
+            index_ratio=extension_ratios[0],
+            middle_ratio=extension_ratios[1],
+            ring_ratio=extension_ratios[2],
+            pinky_ratio=extension_ratios[3],
         )
         self.last_features = features
         self.last_seen_time = now
@@ -305,32 +315,42 @@ class FinalHandTracker:
             return None
         return pose_support[0], pose_support[1]
 
+    def _compute_palm_ref(self, points: dict[int, tuple[float, float]]) -> float:
+        wrist = points[0]
+        refs = [
+            distance(wrist, points[5]),
+            distance(wrist, points[9]),
+            distance(wrist, points[13]),
+            distance(wrist, points[17]),
+        ]
+        return max(0.02, sum(refs) / len(refs))
+
+    def _compute_extension_ratios(self, points: dict[int, tuple[float, float]]) -> list[float]:
+        wrist = points[0]
+        finger_pairs = ((5, 8), (9, 12), (13, 16), (17, 20))
+        ratios: list[float] = []
+        for mcp_idx, tip_idx in finger_pairs:
+            wrist_to_mcp = max(distance(wrist, points[mcp_idx]), 1e-4)
+            mcp_to_tip = distance(points[mcp_idx], points[tip_idx])
+            ratios.append(mcp_to_tip / wrist_to_mcp)
+        return ratios
+
     def _compute_open_strength(
         self,
         points: dict[int, tuple[float, float]],
-        center: tuple[float, float],
-        ref_scale: float,
+        extension_ratios: list[float],
     ) -> float:
-        tip_dists = [distance(points[idx], center) / ref_scale for idx in (8, 12, 16, 20)]
-        thumb_dist = distance(points[4], center) / ref_scale
-        span = distance(points[8], points[20]) / ref_scale
-
-        tip_term = remap_clamped(sum(tip_dists) / len(tip_dists), 0.70, 1.70, 0.0, 1.0)
-        span_term = remap_clamped(span, 1.00, 2.30, 0.0, 1.0)
-        thumb_term = remap_clamped(thumb_dist, 0.65, 1.70, 0.0, 1.0)
-        return clamp(0.55 * tip_term + 0.30 * span_term + 0.15 * thumb_term, 0.0, 1.0)
+        ratio_terms = [remap_clamped(ratio, 0.45, 0.95, 0.0, 1.0) for ratio in extension_ratios]
+        mean_term = sum(ratio_terms) / len(ratio_terms)
+        min_term = min(ratio_terms)
+        return clamp(0.82 * mean_term + 0.18 * min_term, 0.0, 1.0)
 
     def _compute_grab_strength(
         self,
         points: dict[int, tuple[float, float]],
-        center: tuple[float, float],
-        ref_scale: float,
+        extension_ratios: list[float],
     ) -> float:
-        tip_dists = [distance(points[idx], center) / ref_scale for idx in (8, 12, 16, 20)]
-        thumb_dist = distance(points[4], center) / ref_scale
-        span = distance(points[8], points[20]) / ref_scale
-
-        compact_term = 1.0 - remap_clamped(sum(tip_dists) / len(tip_dists), 0.70, 1.50, 0.0, 1.0)
-        span_term = 1.0 - remap_clamped(span, 0.95, 2.05, 0.0, 1.0)
-        thumb_term = 1.0 - remap_clamped(thumb_dist, 0.60, 1.40, 0.0, 1.0)
-        return clamp(0.55 * compact_term + 0.25 * span_term + 0.20 * thumb_term, 0.0, 1.0)
+        compact_terms = [1.0 - remap_clamped(ratio, 0.28, 0.62, 0.0, 1.0) for ratio in extension_ratios]
+        mean_term = sum(compact_terms) / len(compact_terms)
+        max_term = max(compact_terms)
+        return clamp(0.72 * mean_term + 0.28 * max_term, 0.0, 1.0)
