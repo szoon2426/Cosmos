@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-05-13T23:50:00+09:00",
+  "features": {
+    "alpha": 0.58,
+    "beta": 0.31,
+    "theta": 0.44,
+    "gamma": 0.22,
+    "engagement": 0.41,
+    "relaxation": 0.73
+  },
+  "vad": {
+    "valence": 0.62,
+    "arousal": 0.28,
+    "dominance": 0.36
+  }
+}

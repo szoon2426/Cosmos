@@ -1,0 +1,20 @@
+{
+  "eeg_path": "./eeg.example.json",
+  "shared_output_dir": "../shared/generation_requests",
+  "world_counter_path": "./world_counter.txt",
+  "llm": {
+    "provider": "gemini",
+    "api_key_env": "GEMINI_API_KEY",
+    "model": "gemini-1.5-flash",
+    "timeout_sec": 30,
+    "dry_run": true
+  },
+  "prompt_rules": {
+    "preferred_archetypes": [
+      "sealed_observatory",
+      "emotional_tower",
+      "abstract_vertical_structure",
+      "symbolic_landmark"
+    ]
+  }
+}

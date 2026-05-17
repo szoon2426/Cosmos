@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "world_id": "world_0007",
+  "world_number": 7,
+  "created_at": "2026-05-13T14:52:21.462480+00:00",
+  "world_concept": "quiet inner weather held inside a sealed vertical shrine",
+  "asset_prompt": "single centered sealed observatory, isolated structure, closed silhouette, ambiguous function, viewed from outside, object showcase, clean bottom, warm pale material, minimal sacred dreamlike form, readable game asset, no environment",
+  "negative_prompt": "castle, city, village, large environment, landscape, interior, open architecture, wide cinematic scene, fantasy character, dragon, weapon, stairs, platform, bridge, crowd, multiple buildings, clutter, text, watermark, logo, low quality",
+  "archetype": "sealed_observatory",
+  "atmosphere": [
+    "dreamlike",
+    "misty",
+    "soft",
+    "sacred"
+  ],
+  "emotional_state": {
+    "valence": "mid",
+    "arousal": "low",
+    "dominance": "mid"
+  },
+  "source_eeg": {
+    "timestamp": "2026-05-13T23:50:00+09:00",
+    "features": {
+      "alpha": 0.58,
+      "beta": 0.31,
+      "theta": 0.44,
+      "gamma": 0.22,
+      "engagement": 0.41,
+      "relaxation": 0.73
+    },
+    "vad": {
+      "valence": 0.62,
+      "arousal": 0.28,
+      "dominance": 0.36
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "shared_input_dir": "../shared/generation_requests",
+  "output_dir": "../shared/generated_worlds",
+  "world_json_path": "D:/Unreal_Projects/GG/Saved/world_layout.json",
+  "poll_interval_sec": 2.0,
+  "world_space": 2500,
+  "dry_run": true,
+  "asset_provider": "comfyui",
+  "fallback": {
+    "enabled": true,
+    "glb_path": "",
+    "unreal_asset_path": ""
+  },
+  "comfyui": {
+    "base_url": "http://127.0.0.1:8188",
+    "client_id": "cosmos_world_pipeline",
+    "full_asset_workflow": "./workflows/full_asset_workflow_api.json",
+    "text_to_image_workflow": "./workflows/text_to_image.json",
+    "rmbg_workflow": "./workflows/rmbg.json",
+    "prompt_node_id": "6",
+    "negative_prompt_node_id": "7",
+    "image_input_node_id": "1"
+  },
+  "hunyuan3d": {
+    "enabled": false,
+    "command": [
+      "python",
+      "run_hunyuan3d.py",
+      "--image",
+      "{transparent_png}",
+      "--out",
+      "{glb_path}"
+    ]
+  },
+  "unreal_import": {
+    "enabled": false,
+    "script_path": "./unreal_scripts/import_generated_glb.py",
+    "destination_path": "/Game/Generated/{world_id}",
+    "asset_name": "SM_{world_id}_structure",
+    "asset_object_path": "/Game/Generated/{world_id}/SM_{world_id}_structure.SM_{world_id}_structure",
+    "command": [
+      "C:/Program Files/Epic Games/UE_5.6/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
+      "D:/Unreal_Projects/GG/GG.uproject",
+      "-ExecutePythonScript={script_path}",
+      "-glb={glb_path}",
+      "-dest={destination_path}",
+      "-name={asset_name}"
+    ]
+  },
+  "unreal": {
+    "enabled": false,
+    "base_url": "http://localhost:30010",
+    "timeout_sec": 5,
+    "endpoint": "/remote/object/call",
+    "body_template": {
+      "objectPath": "/Game/World/BP_WorldManager.BP_WorldManager_C",
+      "functionName": "SpawnWorld",
+      "parameters": {
+        "WorldJsonPath": "{world_json_path}"
+      }
+    }
+  }
+}
