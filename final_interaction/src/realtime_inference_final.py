@@ -12,12 +12,14 @@ if __package__ in (None, ""):
     sys.path.append(str(Path(__file__).resolve().parent))
     from final_hand_features import FinalHandTracker
     from final_mapper import compute_final_payload
+    from final_pd_bridge import FinalPDBridge
     from final_ue_bridge import FinalUEBridge
     from hand_extractor import HandExtractor
     from pose_extractor import PoseExtractor
 else:
     from .final_hand_features import FinalHandTracker
     from .final_mapper import compute_final_payload
+    from .final_pd_bridge import FinalPDBridge
     from .final_ue_bridge import FinalUEBridge
     from .hand_extractor import HandExtractor
     from .pose_extractor import PoseExtractor
@@ -197,6 +199,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Cosmos final grab/open interaction runtime")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--send", action="store_true", help="Enable sending data to Unreal")
+    parser.add_argument("--send-pd", action="store_true", help="Enable sending data to Pure Data")
     parser.add_argument(
         "--control-hand",
         choices=("left", "right"),
@@ -218,10 +221,30 @@ def main() -> None:
     right_tracker = FinalHandTracker(control_hand="RIGHT")
     left_tracker = FinalHandTracker(control_hand="LEFT")
     ue = FinalUEBridge(enabled=args.send)
+    pd = FinalPDBridge(enabled=args.send_pd)
     ue.start()
+    pd.start()
     memory = BaseMemoryState(base_v=args.base_v, base_a=args.base_a, base_d=args.base_d)
     session = InteractionSession()
     world_vad = memory.current_base()
+    pd_mode = "world"
+
+    if args.send_pd:
+        pd.set_world_mode()
+        pd.send_value("READY_MODE", 0.0)
+        initial_payload = compute_final_payload(
+            interaction_active=False,
+            pointer_x=-1.0,
+            pointer_y=-1.0,
+            target_v=world_vad[0],
+            target_a=world_vad[1],
+            target_d=world_vad[2],
+            grab_active=False,
+            open_strength=0.0,
+            grab_strength=0.0,
+            switch_to_camera=False,
+        )
+        pd.send_payload(initial_payload)
 
     try:
         while True:
@@ -275,6 +298,8 @@ def main() -> None:
                     lerp(world_vad[idx], base_vad[idx], 1.0 / (25.0 * 30.0))
                     for idx in range(3)
                 )
+
+            was_active = session.active
 
             if not session.active:
                 if both_open and avg_z >= -0.05:
@@ -390,6 +415,22 @@ def main() -> None:
             if args.send:
                 ue.send(payload)
 
+            if args.send_pd:
+                if not was_active and session.active:
+                    pd.trigger_ready_on()
+                    pd.send_value("READY_MODE", 1.0)
+                    if pd_mode != "space":
+                        pd.set_space_mode()
+                        pd_mode = "space"
+                elif was_active and not session.active:
+                    pd.trigger_ready_off()
+                    pd.send_value("READY_MODE", 0.0)
+                    if pd_mode != "world":
+                        pd.set_world_mode()
+                        pd_mode = "world"
+
+                pd.send_payload(payload)
+
             draw_hand_overlay(frame, hand_results)
             h, w = frame.shape[:2]
             cx = int(clamp(pointer_x, 0.0, 1.0) * w)
@@ -497,6 +538,7 @@ def main() -> None:
         hand_extractor.close()
         pose_extractor.close()
         ue.stop()
+        pd.stop()
 
 
 if __name__ == "__main__":
