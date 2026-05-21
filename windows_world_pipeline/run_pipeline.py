@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -263,13 +264,31 @@ def scan_once(config: dict[str, Any], config_dir: Path, state: dict[str, Any], r
     return found_work
 
 
+def run_api_server(config: str, host: str, port: int, reload: bool) -> None:
+    os.environ["PIPELINE_CONFIG"] = str(Path(config).expanduser().resolve())
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise RuntimeError("uvicorn is required for --api mode. Install windows_world_pipeline/requirements.txt.") from exc
+
+    uvicorn.run("windows_world_pipeline.api.main:app", host=host, port=port, reload=reload)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Watch eeg_json and automatically build Cosmos world/planet spawn JSON.")
     parser.add_argument("--config", default="windows_world_pipeline/config.example.json")
     parser.add_argument("--once", action="store_true", help="Scan once and exit.")
     parser.add_argument("--reset-state", action="store_true", help="Forget processed EEG files before scanning.")
     parser.add_argument("--process-existing", action="store_true", help="Process JSON files that already exist in eeg_json.")
+    parser.add_argument("--api", action="store_true", help="Run the FastAPI backend instead of the file watcher.")
+    parser.add_argument("--api-host", default="0.0.0.0", help="Host for --api mode.")
+    parser.add_argument("--api-port", type=int, default=8000, help="Port for --api mode.")
+    parser.add_argument("--api-reload", action="store_true", help="Enable uvicorn reload for --api mode.")
     args = parser.parse_args()
+
+    if args.api:
+        run_api_server(args.config, args.api_host, args.api_port, args.api_reload)
+        return
 
     config_path = Path(args.config)
     config_dir = config_path.parent
