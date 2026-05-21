@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +10,7 @@ from windows_world_pipeline.eeg_interpreter.generate_world_instruction import (
     build_llm_prompt,
     call_gemini,
     dry_run_interpretation,
+    next_world_number,
     normalize_eeg_payload,
     normalize_instruction,
 )
@@ -34,6 +34,10 @@ class WorldService:
         self.world_config_path = resolve_config_path(self.config_dir, self.config["world_spawn_config"])
         self.eeg_config = read_json(self.eeg_config_path, {}) or {}
         self.world_config = read_json(self.world_config_path, {}) or {}
+        self.world_counter_path = resolve_config_path(
+            self.eeg_config_path.parent,
+            self.eeg_config.get("world_counter_path", "world_counter.txt"),
+        )
         self.instruction_output_dir = resolve_config_path(self.config_dir, self.config["instruction_output_dir"])
         self.world_spawn_dir = resolve_world_path(
             self.world_config_path.parent,
@@ -78,7 +82,7 @@ class WorldService:
 
         eeg = normalize_eeg_payload(payload_to_eeg_dict(payload))
         interpreted = self._interpret(eeg)
-        world_number = deterministic_world_number(world_id)
+        world_number = next_world_number(self.world_counter_path)
         instruction = normalize_instruction(interpreted, world_number, eeg)
         instruction["world_id"] = world_id
         instruction["world_number"] = world_number
@@ -105,11 +109,6 @@ class WorldService:
         if self.eeg_config.get("llm", {}).get("dry_run", True):
             return dry_run_interpretation(eeg)
         return call_gemini(self.eeg_config, build_llm_prompt(eeg))
-
-
-def deterministic_world_number(world_id: str) -> int:
-    digest = hashlib.sha256(world_id.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) % 9999 + 1
 
 
 def payload_to_eeg_dict(payload: EEGEmotionsPayload) -> dict[str, Any]:

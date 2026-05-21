@@ -119,7 +119,7 @@ def test_generate_world_creates_outputs(monkeypatch, tmp_path):
     instruction = json.loads(Path(body["instruction_path"]).read_text(encoding="utf-8"))
     assert instruction["world_id"] == "test-world-001"
     assert instruction["person_name"] == "백인호"
-    assert isinstance(instruction["world_number"], int)
+    assert instruction["world_number"] == 1
 
 
 def test_generate_world_rejects_duplicate_id(monkeypatch, tmp_path):
@@ -131,6 +131,22 @@ def test_generate_world_rejects_duplicate_id(monkeypatch, tmp_path):
 
     assert first.status_code == 201
     assert second.status_code == 409
+
+
+def test_generate_world_increments_world_number(monkeypatch, tmp_path):
+    monkeypatch.setenv("PIPELINE_CONFIG", str(write_test_config(tmp_path)))
+
+    with TestClient(app) as client:
+        first = client.post("/generate/test-world-001", json=sample_payload())
+        second = client.post("/generate/test-world-002", json=sample_payload())
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    first_instruction = json.loads(Path(first.json()["instruction_path"]).read_text(encoding="utf-8"))
+    second_instruction = json.loads(Path(second.json()["instruction_path"]).read_text(encoding="utf-8"))
+    assert first_instruction["world_number"] == 1
+    assert second_instruction["world_number"] == 2
 
 
 def test_generate_world_rejects_failed_payload(monkeypatch, tmp_path):
