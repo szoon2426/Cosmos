@@ -115,6 +115,9 @@ def deterministic_world_number(world_id: str) -> int:
 def payload_to_eeg_dict(payload: EEGEmotionsPayload) -> dict[str, Any]:
     data = payload.model_dump(mode="json")
     data["recording"] = data.get("recording") or {}
+    subject_name = (data.get("metadata") or {}).get("subject_name")
+    if isinstance(subject_name, str) and subject_name.strip():
+        data["person_name"] = subject_name.strip()
     result = data.get("result") or {}
     result["resting_state_features"] = result.get("resting_state_features") or {}
     data["result"] = result

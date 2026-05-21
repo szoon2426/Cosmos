@@ -64,6 +64,11 @@ class ResultSummaryPayload(FlexibleModel):
         return value
 
 
+class EEGEmotionsMetadata(FlexibleModel):
+    expected_recording_sec: int | None = None
+    subject_name: str | None = None
+
+
 class EEGEmotionsPayload(FlexibleModel):
     job_id: str
     status: JobStatus
@@ -74,7 +79,7 @@ class EEGEmotionsPayload(FlexibleModel):
     recording: RecordingSummaryPayload | None = None
     result: ResultSummaryPayload | None = None
     error: JobErrorPayload | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: EEGEmotionsMetadata = Field(default_factory=EEGEmotionsMetadata)
 
     @model_validator(mode="after")
     def validate_generate_payload(self) -> EEGEmotionsPayload:

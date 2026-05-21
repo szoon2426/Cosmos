@@ -56,7 +56,7 @@ def sample_payload() -> dict[str, Any]:
             "inference_manifest": None,
         },
         "error": None,
-        "metadata": {"expected_recording_sec": 30},
+        "metadata": {"expected_recording_sec": 30, "subject_name": "백인호"},
     }
 
 
@@ -118,6 +118,7 @@ def test_generate_world_creates_outputs(monkeypatch, tmp_path):
 
     instruction = json.loads(Path(body["instruction_path"]).read_text(encoding="utf-8"))
     assert instruction["world_id"] == "test-world-001"
+    assert instruction["person_name"] == "백인호"
     assert isinstance(instruction["world_number"], int)
 
 
