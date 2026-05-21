@@ -1,274 +1,142 @@
-# Cosmos Emotional World Pipeline
+# Cosmos
 
-Cosmos는 EEG 데이터와 관객 인터랙션을 바탕으로 감정적인 전시 월드를 생성하고 Unreal Engine에서 실행하기 위한 프로젝트입니다.
-
-전체 목표는 다음 흐름을 안정적으로 연결하는 것입니다.
+Cosmos는 두 개의 큰 프로젝트로 구성됩니다.
 
 ```text
-EEG
--> VAD / emotional features
--> LLM interpretation
--> world concept + asset prompt
--> image / 3D asset generation
--> Unreal asset import
--> procedural world layout
--> Unreal Remote Control SpawnWorld
--> playable emotional world
+1. Exhibition Interaction Project
+2. Windows World Pipeline Project
 ```
 
-## 전체 파이프라인
+## 1. Exhibition Interaction Project
 
-### 1. Mac Mini: EEG + LLM
+전시 중 관객의 움직임을 읽고 Unreal과 사운드 시스템에 실시간 값을 보내는 프로젝트입니다.
 
-Mac Mini에서는 `eeg.json`을 읽고 LLM을 통해 감정 상태를 해석합니다.
-
-역할:
-
-- EEG feature와 VAD 관련 값을 읽기
-- 현재 감정 상태 해석
-- 월드 컨셉 생성
-- 상징적 구조물의 asset prompt 생성
-- negative prompt 생성
-- 분위기 키워드와 archetype 생성
-- Windows Unreal Desktop이 읽을 generation request JSON 저장
-
-현재 구현 위치:
+관련 폴더:
 
 ```text
-mac_eeg_llm/
+final_interaction/
+cosmos_sound/
+interaction3/
 ```
-
-예상 출력:
-
-```json
-{
-  "world_id": "world_0007",
-  "world_number": 7,
-  "world_concept": "quiet inner weather held inside a sealed vertical shrine",
-  "asset_prompt": "single centered sealed observatory...",
-  "negative_prompt": "castle, city, large environment...",
-  "archetype": "sealed_observatory",
-  "atmosphere": ["dreamlike", "misty", "soft", "sacred"]
-}
-```
-
-LLM은 월드의 감정, 컨셉, 프롬프트, 에셋 방향성을 정합니다. 실제 위치 배치와 겹침 방지, pond/rock/statue/fountain/tree 규칙은 Windows 쪽 Python layout solver가 담당합니다.
-
-### 2. Windows Desktop: Asset + Unreal
-
-Windows Desktop에서는 Mac Mini가 공유 폴더에 저장한 JSON을 받아 에셋 생성과 Unreal 배치를 진행합니다.
-
-역할:
-
-- shared folder의 generation request JSON 감시
-- ComfyUI 또는 외부 3D provider로 에셋 생성
-- PNG / transparent PNG / GLB 저장
-- GLB를 Unreal Content Browser에 자동 import
-- world layout JSON 생성
-- Unreal Remote Control API로 `SpawnWorld` 실행
-
-현재 구현 위치:
-
-```text
-windows_world_pipeline/
-```
-
-현재 기본 output:
-
-```text
-shared/generated_worlds/
-D:/Unreal_Projects/GG/Saved/world_layout.json
-```
-
-## 월드 생성 규칙
-
-Unreal에서는 `world_number * world_space`로 BP_World 자체를 배치합니다. 그래서 `world_layout.json` 안의 asset 위치는 각 BP_World 내부 local coordinate로 유지합니다.
-
-주요 규칙:
-
-- `fountain`, `statue`, `generated_symbolic_structure`는 필수 에셋
-- pond는 1~3개까지 허용
-- pond는 너무 뒤로 밀지 않고, 서로 붙지 않게 spot을 나누어 배치
-- pond scale은 X/Y가 달라도 되며, Y가 긴 연못도 허용
-- rock path는 pond 쪽으로 연결되지만 pond mesh 안으로 들어가지 않음
-- pond를 감싸는 돌은 pond 크기와 ellipse radius를 기준으로 계산
-- 큰 에셋 뒤에는 pond처럼 중요한 시각 요소를 가리지 않도록 배치
-- fountain은 카메라에 잡히도록 grass line 안쪽에 여유 있게 배치
-- statue는 pond 뒤쪽이나 옆쪽에 두는 구성을 우선
-- large rock이 pond보다 앞에서 pond를 가리지 않도록 제한
-- tree는 주로 back/side, edge 쪽에 배치
-- 큰 에셋 우선순위는 `tree > statue > fountain > rock_l/m/s > glow_sphere`
-
-## 폴더 소개
-
-### `cosmos_sound/`
-
-전시 공간의 사운드와 관련된 폴더입니다. Pd 패치, 사운드 실험, 전시 공간에서 사용할 오디오 로직이 여기에 포함됩니다.
 
 ### `final_interaction/`
 
-최종 전시에 사용할 카메라 인터랙션 런타임입니다. `final_0505` 브랜치에서 가져온 최종 전시용 코드입니다.
+최종 전시에 사용할 웹캠 기반 인터랙션 코드입니다.
 
-코드 기준으로 보면 이 인터랙션은 MediaPipe 기반 hand/pose tracking을 사용합니다. 양손이 화면에 보이고 open 상태가 되면 interaction이 시작되고, 양손 grab 상태에서는 손 사이의 거리와 깊이 변화로 VAD 값을 조정합니다.
+역할:
 
-조작 방식:
+- MediaPipe hand/pose tracking
+- 손, 팔, 포즈 기반 인터랙션 분석
+- VAD 변화값 계산
+- Unreal Remote Control로 `Target V`, `Target A`, `Target D`, speed, density 값 전송
+- 특정 thrust 동작에서 `SwitchToWorld(galaxy)` 호출
 
-- 양손 open: 인터랙션 시작 및 유지
-- 양손 grab: VAD 조정 모드
-- 손의 좌우 간격 변화: valence 조정
-- 손의 세로 간격 또는 모임 변화: arousal 조정
-- 손을 앞으로/뒤로 움직이는 깊이 변화: dominance 조정
-- open 상태에서 특정 thrust 움직임: camera switch trigger
+### `cosmos_sound/`
 
-Unreal로 보내는 값:
+전시 공간 사운드를 위한 Pure Data 패치와 사운드 파일 폴더입니다.
 
-- `Interaction Active`
-- `Pointer X`
-- `Pointer Y`
-- `Target V`
-- `Target A`
-- `Target D`
-- `Density`
-- `Decay Amount`
-- `Min Speed`
-- `Max Speed`
-- `Grab Active`
-- `Switch To Camera`
+역할:
 
-전송 방식은 Unreal Remote Control Preset인 `NewRemoteControlPreset`의 property를 `PUT /remote/preset/.../property/...`로 갱신하는 구조입니다.
+- 전시 공간 배경 사운드
+- 인터랙션과 연결될 수 있는 Pd 패치 관리
 
 ### `interaction3/`
 
-이전 인터랙션 실험과 Unreal 값 전송 기준을 보존한 폴더입니다.
+이전 인터랙션 기준 코드입니다.
 
-현재 최종 전시 런타임은 `final_interaction/`을 사용하지만, `interaction3/`는 Unreal에 어떤 값들을 어떤 식으로 보냈는지 참고하기 위한 기준 코드로 남겨둡니다.
+현재 최종 실행 경로는 아니지만, Unreal에 값을 어떻게 보내는지 참고하기 위해 남겨둔 기준 코드입니다.
 
-특히 VAD 값, gesture state, Unreal Remote Control bridge, Pd bridge 등 이전 구조를 다시 확인해야 할 때 참고합니다.
+## 2. Windows World Pipeline Project
 
-### `mac_eeg_llm/`
+EEG JSON을 받아 감정 월드와 갤럭시 planet을 생성하고 Unreal에 spawn 요청을 보내는 프로젝트입니다.
 
-Mac Mini에서 실행할 EEG + LLM instruction generator입니다.
+관련 폴더:
 
-역할:
+```text
+windows_world_pipeline/
+eeg_json/
+world_instructions/
+world_spawn_json/
+planet_spawn/
+pipeline_state/
+person_world_map.json
+```
 
-- `eeg.json` 읽기
-- EEG/VAD 기반 감정 상태 해석
-- LLM API를 통해 월드 컨셉 생성
-- ComfyUI/3D generation에 사용할 asset prompt 생성
-- Windows Desktop에서 사용할 generation request JSON 저장
+현재 버전에서는 3D asset generation, ComfyUI, GLB import를 사용하지 않습니다.
 
-이 프로젝트는 에셋을 직접 생성하지 않습니다. Unreal Desktop 쪽이 사용할 정보를 정리해서 shared folder에 넘기는 역할만 합니다.
+### Flow
+
+```text
+eeg_json/*.json 생성 또는 수정
+-> windows_world_pipeline watcher 감지
+-> eeg_interpreter가 EEG/VAD 해석
+-> world_instructions/world_xxxx.json 저장
+-> world_spawn_json/world_xxxx.json 저장
+-> planet_spawn/planet_layout.json 덮어쓰기
+-> planet_spawn/planets_layout.json 누적 업데이트
+-> person_world_map.json 업데이트
+-> Unreal Remote Control SpawnPlanet 호출
+-> watcher 상태로 복귀
+```
+
+### Run
+
+프로젝트 루트에서 실행합니다.
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json
+```
+
+이미 `eeg_json/`에 들어있는 샘플까지 처리하려면:
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --process-existing
+```
+
+한 번만 스캔하고 종료하려면:
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --once --process-existing
+```
 
 ### `windows_world_pipeline/`
 
-Unreal Desktop에서 실행할 에셋 생성 및 월드 생성 파이프라인입니다.
-
-역할:
-
-- shared folder 감시
-- generation request JSON 읽기
-- ComfyUI API workflow 실행
-- generated structure PNG/GLB 저장
-- Unreal Editor Python으로 GLB import
-- world layout JSON 생성
-- Unreal Remote Control API로 SpawnWorld 호출
-
-에셋 배치 규칙과 pond/tree/statue/fountain/rock/glow sphere 배치 로직도 이쪽 Python 코드에서 관리합니다.
-
-### `shared/`
-
-Mac Mini와 Windows Desktop 사이에서 JSON과 생성 결과물을 주고받는 공유 폴더입니다.
-
-주요 용도:
-
-- Mac Mini가 만든 generation request JSON 저장
-- Windows Desktop이 생성한 world output 저장
-- generated asset, manifest, world layout JSON 저장
-
-예상 구조:
+월드 생성 파이프라인의 코드가 모여 있는 폴더입니다.
 
 ```text
-shared/
-  generation_requests/
-  generated_worlds/
+windows_world_pipeline/
+  run_pipeline.py
+  config.example.json
+  eeg_interpreter/
+  world_spawn/
+  legacy_asset_generation/
 ```
 
-### `scratch/`
+### `eeg_json/`
 
-임시 실험용 폴더입니다.
+EEG JSON 입력 폴더입니다. 지금은 실제 EEG WebSocket 대신 이 폴더를 감시합니다.
 
-현재는 Pd 사운드 관련 파싱/테스트 스크립트가 남아 있습니다. 명확히 파이프라인에 들어간 코드는 아니므로, 필요한 실험만 남기고 정리해도 되는 후보입니다.
+### `world_instructions/`
 
-### `PIPELINE_CHECKLIST.md`
+EEG 해석 결과가 저장되는 폴더입니다.
 
-전체 파이프라인 구조와 연결 상태를 정리한 문서입니다.
+### `world_spawn_json/`
 
-### `REMAINING_WORK_CHECKLIST.md`
+Unreal world spawn JSON이 월드별로 저장되는 폴더입니다.
 
-남은 작업을 체크리스트로 관리하는 문서입니다. 완료된 작업과 아직 남은 핵심 작업을 구분해서 추적합니다.
+### `planet_spawn/`
 
-## 현재 작업 현황
+갤럭시 planet spawn JSON이 저장되는 폴더입니다.
 
-완료된 것:
+- `planet_layout.json`: 최신 planet 하나
+- `planets_layout.json`: 전체 planet 누적 배열
 
-- Mac Mini용 EEG + LLM instruction generator 기본 구조
-- Gemini API 연결 구조
-- dry-run emotion/world instruction 생성
-- shared generation request 저장 구조
-- Windows watcher / once 처리 구조
-- ComfyUI API workflow 연결 구조
-- full asset workflow API JSON 연결
-- asset generator wrapper 구조
-- dry-run asset generation
-- procedural world layout solver
-- pond/tree/statue/fountain/rock 배치 규칙 반영
-- pond occlusion 및 large rock occlusion 보정
-- world별 고유 generated mesh path 구조
-- Unreal GLB import script 초안
-- `final_interaction/` 복원
-- 오래된 `interaction`, `interaction2`, `interaction_test` 정리
+### `person_world_map.json`
 
-남은 핵심 작업:
+사람 이름과 world id를 매핑합니다.
 
-- 실제 ComfyUI workflow 실행 검증
-- 실제 GLB 생성 결과 확인
-- Unreal Editor 자동 import 실검증
-- Unreal `WorldLoader`에서 `mesh_asset_path` 로드 지원
-- Remote Control `SpawnWorld` 실호출 검증
-- 실패 처리, retry, cached fallback 구현
-- 전시/시연용 대기 화면과 안정화
-
-## 다음 우선순위
-
-```text
-1. Mock EEG JSON으로 전체 파이프라인 한 번 관통
-2. 생성된 GLB가 Unreal에 자동 import되는지 확인
-3. WorldLoader에서 mesh_asset_path를 읽어 실제 StaticMesh로 배치
-4. SpawnWorld Remote Control 호출 연결
-5. 실패해도 전시가 멈추지 않도록 fallback asset/cache 적용
-```
-
-## 실행 예시
-
-Mac side dry run:
-
-```powershell
-python mac_eeg_llm/generate_world_instruction.py --config mac_eeg_llm/config.example.json
-```
-
-Windows side once:
-
-```powershell
-python windows_world_pipeline/pipeline_worker.py --config windows_world_pipeline/config.example.json --once
-```
-
-Windows side watch:
-
-```powershell
-python windows_world_pipeline/pipeline_worker.py --config windows_world_pipeline/config.example.json
-```
-
-## 작업 문서
+## Documents
 
 - [PIPELINE_CHECKLIST.md](PIPELINE_CHECKLIST.md)
 - [REMAINING_WORK_CHECKLIST.md](REMAINING_WORK_CHECKLIST.md)
+- [windows_world_pipeline/README.md](windows_world_pipeline/README.md)

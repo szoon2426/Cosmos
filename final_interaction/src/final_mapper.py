@@ -27,22 +27,31 @@ class FinalInteractionPayload:
     min_speed: float
     max_speed: float
     grab_active: float
+    open_strength: float
+    grab_strength: float
     switch_to_camera: float
+    l_grip: float
+    r_grip: float
+    l_y_location: float
+    l_z_location: float
+    r_y_location: float
+    r_z_location: float
 
     def as_preset_properties(self) -> dict[str, float]:
         return {
-            "Interaction Active": self.interaction_active,
-            "Pointer X": self.pointer_x,
-            "Pointer Y": self.pointer_y,
             "Target V": self.target_v,
             "Target A": self.target_a,
             "Target D": self.target_d,
-            "Density": self.density,
-            "Decay Amount": self.decay,
+            "Flower Density": self.density,
+            "decay": self.decay,
             "Min Speed": self.min_speed,
             "Max Speed": self.max_speed,
-            "Grab Active": self.grab_active,
-            "Switch To Camera": self.switch_to_camera,
+            "L_Grip": self.l_grip,
+            "R_Grip": self.r_grip,
+            "L_Y Location": self.l_y_location,
+            "L_ Z Location": self.l_z_location,
+            "R_Y Location": self.r_y_location,
+            "R_ Z Location": self.r_z_location,
         }
 
 
@@ -58,6 +67,12 @@ def compute_final_payload(
     open_strength: float,
     grab_strength: float,
     switch_to_camera: bool,
+    l_grip: float = 0.0,
+    r_grip: float = 0.0,
+    l_y_location: float = 40.0,
+    l_z_location: float = 160.0,
+    r_y_location: float = 40.0,
+    r_z_location: float = 160.0,
 ) -> FinalInteractionPayload:
     target_v = clamp(target_v, -1.0, 1.0)
     target_a = clamp(target_a, -1.0, 1.0)
@@ -80,5 +95,13 @@ def compute_final_payload(
         min_speed=min_speed,
         max_speed=max_speed,
         grab_active=1.0 if grab_active else 0.0,
+        open_strength=clamp(open_strength, 0.0, 1.0),
+        grab_strength=clamp(grab_strength, 0.0, 1.0),
         switch_to_camera=1.0 if switch_to_camera else 0.0,
+        l_grip=clamp(l_grip, 0.0, 1.0),
+        r_grip=clamp(r_grip, 0.0, 1.0),
+        l_y_location=l_y_location,
+        l_z_location=l_z_location,
+        r_y_location=r_y_location,
+        r_z_location=r_z_location,
     )

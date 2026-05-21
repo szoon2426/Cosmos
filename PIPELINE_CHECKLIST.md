@@ -1,436 +1,297 @@
 # Cosmos EEG World Pipeline Checklist
 
-남은 실행 작업은 [`REMAINING_WORK_CHECKLIST.md`](REMAINING_WORK_CHECKLIST.md)에서 체크리스트로 추적합니다.
-
-## Goal
-
-EEG data becomes an emotionally symbolic playable Unreal world.
+현재 파이프라인은 3D asset generation 없이 동작합니다.
 
 ```text
-EEG JSON
--> Mac Mini LLM interpretation
--> generation instruction JSON
--> Windows watcher
--> ComfyUI image/RMBG/Hunyuan3D workflow
--> generated asset files
--> Unreal automated GLB import
--> Python layout solver
--> Unreal world_layout.json
--> Unreal Remote Control SpawnWorld
+eeg_json/*.json
+-> windows_world_pipeline watcher
+-> eeg_interpreter instruction
+-> world_instructions/world_xxxx.json
+-> world_spawn_json/world_xxxx.json
+-> planet_spawn/planet_layout.json
+-> planet_spawn/planets_layout.json
+-> person_world_map.json
+-> Unreal Remote Control SpawnPlanet
 ```
 
-## Project Split
-
-### Project 1: Mac Mini
-
-Folder:
-
-```text
-mac_eeg_llm/
-```
-
-Role:
-
-- Read `eeg.json`.
-- Interpret emotion and VAD.
-- Generate world concept.
-- Generate symbolic structure prompt.
-- Generate negative prompt.
-- Generate atmosphere keywords.
-- Save generation instruction JSON into a shared folder.
-
-Current script:
-
-```text
-mac_eeg_llm/generate_world_instruction.py
-```
-
-Current output:
-
-```json
-{
-  "schema_version": 1,
-  "world_id": "world_0007",
-  "world_number": 7,
-  "world_concept": "quiet inner weather held inside a sealed vertical shrine",
-  "asset_prompt": "single centered sealed observatory...",
-  "negative_prompt": "castle, city...",
-  "archetype": "sealed_observatory",
-  "atmosphere": ["dreamlike", "misty", "soft", "sacred"],
-  "emotional_state": {
-    "valence": "mid",
-    "arousal": "low",
-    "dominance": "mid"
-  }
-}
-```
-
-Recommended next output extension:
-
-```json
-{
-  "asset_plan": {
-    "required": ["fountain", "statue", "generated_symbolic_structure"],
-    "pond_count": 2,
-    "tree_count": 3,
-    "layout_bias": "spread_out",
-    "structure_role": "back_center_silhouette"
-  }
-}
-```
-
-The LLM should decide emotional intent and asset intent. It should not generate final coordinates.
-
-### Project 2: Windows Desktop
-
-Folder:
-
-```text
-windows_world_pipeline/
-```
-
-Role:
-
-- Watch the shared instruction folder.
-- Run ComfyUI API workflow.
-- Save generated image, transparent image, and GLB.
-- Import generated GLB into Unreal as a reusable generated mesh asset.
-- Generate Unreal `world_layout.json`.
-- Call Unreal Remote Control `SpawnWorld`.
-
-Current script:
-
-```text
-windows_world_pipeline/pipeline_worker.py
-```
-
-Current Unreal output path:
-
-```text
-D:/Unreal_Projects/GG/Saved/world_layout.json
-```
-
-## Shared Folder Contract
-
-Mac writes:
-
-```text
-shared/generation_requests/world_0007.json
-```
-
-Windows reads:
-
-```text
-shared/generation_requests/*.json
-```
-
-Windows writes generated artifacts:
-
-```text
-shared/generated_worlds/world_0007/
-  assets/
-    world_0007_source.png
-    world_0007_transparent.png
-    world_0007.glb
-  world_0007_manifest.json
-```
-
-Windows writes Unreal layout:
-
-```text
-D:/Unreal_Projects/GG/Saved/world_layout.json
-```
-
-Windows imports each generated GLB into a world-specific Unreal asset path:
-
-```text
-/Game/Generated/world_0007/SM_world_0007_structure
-```
-
-The generated structure asset in `world_layout.json` should include:
-
-```json
-{
-  "asset_key": "generated_symbolic_structure",
-  "mesh_asset_path": "/Game/Generated/world_0007/SM_world_0007_structure.SM_world_0007_structure"
-}
-```
-
-## ComfyUI Workflow
-
-The ComfyUI graph should be exported as API workflow JSON.
-
-Expected graph:
-
-```text
-Prompt
--> image generation
--> RMBG
--> Hunyuan3D
--> SaveGLB
-```
-
-Save API workflow here:
-
-```text
-windows_world_pipeline/workflows/full_asset_workflow_api.json
-```
-
-Config:
-
-```json
-{
-  "comfyui": {
-    "base_url": "http://127.0.0.1:8188",
-    "full_asset_workflow": "./workflows/full_asset_workflow_api.json",
-    "prompt_node_id": "6",
-    "negative_prompt_node_id": "7"
-  }
-}
-```
-
-Important:
-
-- Use ComfyUI API format, not normal UI workflow JSON.
-- Confirm the positive prompt node ID.
-- Confirm the negative prompt node ID.
-- Confirm SaveGLB appears in ComfyUI history output.
-
-## Layout Solver Rules
-
-Python generates final positions. The LLM does not.
-
-### Core World Rules
-
-- Unreal places the BP_World using `world_number * world_space`.
-- Asset locations inside JSON are local BP_World coordinates.
-- Do not add world offset to asset locations.
-- No world scale.
-- No world rotation.
-- No camera rotation.
-- No offset vector.
-
-Required Unreal JSON:
-
-```json
-{
-  "world_id": "world_0007",
-  "world_number": 7,
-  "world_name": "...",
-  "seed": 788127,
-  "flower_density": 0.74,
-  "flower_type": ["sea_thrift", "leadwort"],
-  "assets": []
-}
-```
-
-### Required Assets
-
-Must never be omitted:
-
-- `fountain`
-- `statue`
-- `generated_symbolic_structure`
-
-### Pond Rules
-
-- Pond count: 1 to 3.
-- Ponds are distributed using spots, not pure random.
-- Ponds can be near grass edges, including outside the central camera framing.
-- Ponds should not go too far back.
-- Ponds should not be clustered.
-- Pond scale can be non-uniform.
-- X and Y scale do not need to match.
-- Y-long ponds are allowed.
-- Rock path should lead toward a primary pond.
-- Rock path must stop before entering pond mesh.
-- Pond border rocks are placed using the pond ellipse radius.
-
-### Fountain Rules
-
-- Fountain is mandatory.
-- Fountain must stay inside the grass line with margin.
-- Fountain must not hide ponds from the camera.
-- Fountain candidate positions are tested against pond occlusion lanes.
-
-### Statue Rules
-
-- Statue is mandatory.
-- Statue should be placed behind or beside a pond when possible.
-- Statue should remain readable.
-- Statue should not exceed roughly `X=310`.
-
-### Occlusion Rules
-
-Camera reference:
-
-```text
-X=-900
-Y=40
-Z=160
-```
-
-Camera looks generally toward positive X.
-
-Large asset priority:
-
-```text
-tree > statue > fountain > rock_l / rock_m / rock_s > glow_sphere
-```
-
-Avoid placing larger assets in front of important smaller/flat assets.
-
-Specifically:
-
-- `rock_l`, `rock_m1`, `rock_m2` should not sit in front of ponds.
-- `fountain` should not sit in front of ponds.
-- `tree` should live mostly in back/side zones.
-- If a candidate location blocks pond visibility, reject it.
-
-### Tree Rules
-
-- Tree count can vary.
-- Trees should mostly be in back/side zones.
-- Preferred X range: `500~700`.
-- Trees can be multiple, but must not overlap major assets.
-
-### Flower Rules
-
-Flower types:
-
-- `poppy`
-- `bermuda_buttercup`
-- `sea_thrift`
-- `desert_cotton`
-- `leadwort`
-- `silver_downy`
-- `elderberry`
-
-Rules:
-
-- Randomly mix 2 to 5 flower types.
-- Flower density handled by PCG.
-- Seed should affect PCG randomness.
-
-## Current Implementation Status
-
-Done:
-
-- Mac EEG instruction generator.
-- Gemini API integration skeleton.
-- Dry-run emotional interpretation.
-- Shared instruction JSON writer.
-- Windows shared folder watcher.
-- ComfyUI API client skeleton.
-- Full ComfyUI asset workflow support.
-- Dry-run asset generation.
-- Hunyuan3D command hook.
-- Unreal automated GLB import hook.
-- Unreal Editor Python import script.
-- World-specific generated mesh import path.
-- `mesh_asset_path` included in generated structure JSON.
-- Asset generator wrapper skeleton.
-- Unreal world JSON writer.
-- Unreal Remote Control call hook.
-- Procedural layout solver.
-- Pond spot distribution.
-- Pond ellipse border rock placement.
-- Required fountain/statue handling.
-- Pond and large-rock occlusion checks.
-- Grass-line margin for fountain.
-
-Needs setup:
-
-- Export actual ComfyUI API workflow JSON.
-- Put workflow at `windows_world_pipeline/workflows/full_asset_workflow_api.json`.
-- Set correct positive prompt node ID.
-- Set correct negative prompt node ID.
-- Set `dry_run` to `false`.
-- Confirm ComfyUI server URL.
-- Confirm Hunyuan3D SaveGLB output is visible through ComfyUI history.
-- Compare Meshy / Tripo / ComfyUI output quality with 5 to 10 prompts.
-- Choose one first production asset provider.
-- Confirm local Unreal Editor executable path.
-- Confirm local `.uproject` path.
-- Confirm `WorldLoader` supports `mesh_asset_path` for generated symbolic structures.
-- Confirm Unreal Remote Control endpoint body.
-- Set `unreal.enabled` to `true`.
-
-Needs coding:
-
-- Add `asset_plan` to Mac LLM output.
-- Make Windows layout solver read `asset_plan`.
-- Implement real Meshy provider if selected.
-- Implement real Tripo provider if selected.
-- Add validation report after layout generation.
-- Add retry if ComfyUI output is missing GLB.
-- Add processed/error folder for instruction JSONs.
-- Add better logging per world ID.
-- Add cached asset fallback for demo timeout.
-
-## Run Commands
-
-Mac side dry run:
+## 실행 흐름
+
+- [x] `eeg_json/` 폴더 생성
+- [x] 샘플 EEG JSON 7명분 생성
+- [x] `windows_world_pipeline/run_pipeline.py` watcher 추가
+- [x] 기존 파일은 기본적으로 skip하고 새 파일 또는 수정 파일만 처리
+- [x] 처리 상태를 `pipeline_state/eeg_pipeline_state.json`에 저장
+- [x] `world_instructions/`에 LLM instruction 저장
+- [x] `world_spawn_json/`에 월드별 spawn JSON 저장
+- [x] `planet_spawn/planet_layout.json` 최신 planet 저장
+- [x] `planet_spawn/planets_layout.json` 전체 planet 누적
+- [x] `person_world_map.json` 사람 이름과 world id 매핑
+- [x] Remote Control `SpawnPlanet` 호출 코드 추가
+
+## 사용자 실행 명령
+
+기본 watcher:
 
 ```powershell
-python mac_eeg_llm/generate_world_instruction.py --config mac_eeg_llm/config.example.json
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json
 ```
 
-Windows side once:
+이미 있는 샘플까지 처리:
 
 ```powershell
-python windows_world_pipeline/pipeline_worker.py --config windows_world_pipeline/config.example.json --once
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --process-existing
 ```
 
-Windows side watch:
+한 번만 테스트:
 
 ```powershell
-python windows_world_pipeline/pipeline_worker.py --config windows_world_pipeline/config.example.json
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --once --process-existing
 ```
 
-## Final Production Switches
+처리 기록 초기화:
 
-Mac config:
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --reset-state --process-existing
+```
+
+## EEG JSON 입력 형식
 
 ```json
 {
-  "llm": {
-    "dry_run": false
-  }
-}
-```
-
-Windows config:
-
-```json
-{
-  "dry_run": false,
-  "unreal_import": {
-    "enabled": true
+  "timestamp": "2026-05-20T15:00:00+09:00",
+  "person_name": "person_001",
+  "features": {
+    "alpha": 0.64,
+    "beta": 0.28,
+    "theta": 0.52,
+    "gamma": 0.19,
+    "engagement": 0.36,
+    "relaxation": 0.78
   },
-  "unreal": {
-    "enabled": true
+  "vad": {
+    "valence": 0.62,
+    "arousal": 0.24,
+    "dominance": 0.34
   }
 }
 ```
 
-## Next Best Step
+## LLM Instruction 출력
 
-Export the current ComfyUI graph as API workflow JSON, then inspect it to identify:
+```json
+{
+  "world_id": "world_0015",
+  "world_number": 15,
+  "person_name": "person_001",
+  "world_concept": "quiet inner weather held inside a sealed vertical shrine",
+  "planet_mesh_type": "smooth_planet",
+  "planet_material_type": "blue",
+  "flower_color_group": "purple",
+  "flower_types": ["leadwort_1", "pentas_1", "silver_downy_1"],
+  "emotional_state": {"valence": "mid", "arousal": "low", "dominance": "mid"}
+}
+```
 
-- positive prompt node ID
-- negative prompt node ID
-- Save Image output field
-- SaveGLB output field
+## Planet 규칙
 
-After that, run the Windows pipeline with `dry_run: false` while Unreal spawning remains disabled. Once asset generation works, enable Unreal Remote Control.
-
-Before enabling spawn, verify one generated GLB import:
+사용 가능한 `mesh_type`:
 
 ```text
-GLB file exists
--> Unreal import command succeeds
--> /Game/Generated/{world_id}/SM_{world_id}_structure exists
--> world_layout.json includes mesh_asset_path
--> WorldLoader resolves mesh_asset_path before falling back to asset_key
+basic_planet
+sharp_planet
+smooth_planet
+complicated_planet
+simple_planet
 ```
+
+사용 가능한 `material_type`:
+
+```text
+yellow
+blue
+green
+orange
+purple
+gold
+red
+pink
+```
+
+위치 공간:
+
+```text
+front plane:
+x = -2000
+y = -1550 ~ 1550
+z = -900 ~ 900
+
+back plane:
+x = 300
+y = -3700 ~ 3700
+z = -2100 ~ 2100
+```
+
+생성 방식:
+
+```text
+x = random(-2000, 300)
+t = (x - front_x) / (back_x - front_x)
+y_limit = lerp(1550, 3700, t)
+z_limit = lerp(900, 2100, t)
+y = random(-y_limit, y_limit)
+z = random(-z_limit, z_limit)
+```
+
+기존 planet과 너무 가까우면 다시 뽑습니다.
+
+## Flower 규칙
+
+Purple:
+
+```text
+silver_downy_1
+pentas_1
+pentas_2
+leadwort_1
+leadwort_2
+bigleaf
+```
+
+Red:
+
+```text
+silver_downy_2
+bougainv_1
+bougainv_2
+dianthus_1
+dianthus_2
+daisy_1
+daisy_2
+```
+
+Yellow:
+
+```text
+campion_1
+campion_2
+gazania_1
+gazania_2
+crownbeard_1
+crownbeard_2
+windflower_1
+windflower_2
+```
+
+LLM이 `flower_color_group`과 `flower_types`를 제안하고, Python이 유효한 mesh key만 저장합니다.
+
+## Fountain / Statue Mesh 규칙
+
+`fountain`과 `statue` asset은 공통 필드에 더해 `mesh` 필드를 가집니다.
+
+```json
+{
+  "asset_key": "fountain",
+  "location": [-430, -260, 0],
+  "rotation": [0.0, 0.0, 145.0],
+  "scale": [1.05, 1.05, 1.05],
+  "mesh": "rock_octagon"
+}
+```
+
+Fountain mesh:
+
+```text
+rock_octagon
+plate_round
+pillar_round
+basic
+```
+
+Statue mesh:
+
+```text
+inner_quietness
+neural_tempo
+resonance_clarity
+arousal_drift
+frontal_tilt
+```
+
+Statue는 EEG JSON의 `world_style` 값 중 가장 강한 성향을 기준으로 고릅니다.
+
+```json
+{
+  "world_style": {
+    "quietness": 0.78,
+    "tempo": 0.42,
+    "clarity": 0.66,
+    "bandwidth": 0.81,
+    "drift": 0.35,
+    "frontal_tilt": -0.24,
+    "texture": 0.58,
+    "ecology": 0.73
+  }
+}
+```
+
+기본 매핑:
+
+```text
+quietness -> inner_quietness
+tempo -> neural_tempo
+clarity -> resonance_clarity
+drift / bandwidth -> arousal_drift
+abs(frontal_tilt) -> frontal_tilt
+```
+
+Fountain은 VAD와 EEG feature를 기준으로 고릅니다.
+
+Statue placement:
+
+```text
+x range: 30 ~ 310
+x = 30  -> scale 1.25
+x = 310 -> scale 1.35
+rotation yaw -> project convention using camera reference (-900, 40)
+0 = front
+90 = left
+180 = back
+270 = right
+right-side statue -> yaw between 0 and 90
+```
+
+## Unreal Remote Control
+
+기본 preset:
+
+```text
+RCP_WorldVariable
+```
+
+기본 함수 후보:
+
+```text
+Spawn Planet
+SpawnPlanet
+Spawn Planets
+SpawnPlanets
+```
+
+남은 확인:
+
+- [ ] Unreal Remote Control Preset에 실제 `SpawnPlanet` 함수 노출
+- [ ] 함수 이름이 다르면 `windows_world_pipeline/config.example.json` 수정
+- [ ] `SpawnPlanet`이 `planet_spawn/planet_layout.json`을 읽는지 확인
+- [ ] `BP_Galaxy`가 `planets_layout.json`으로 기존 planet 복원하는지 확인
+- [ ] planet 선택 시 `world_spawn_json/{world_id}.json`을 찾는지 확인
+
+## 남은 작업
+
+- [ ] 실제 EEG WebSocket에서 저장되는 JSON 포맷 확인
+- [ ] WebSocket 수신 파일을 `eeg_json/`에 저장하는 어댑터 작성
+- [ ] Gemini `dry_run: false` 실제 호출 테스트
+- [ ] Unreal `SpawnPlanet` Remote Control 실호출 테스트
+- [ ] `BP_Galaxy` planet spawn / restore 구현
+- [ ] planet 접근 카메라 이동 구현
+- [ ] world 체험 후 galaxy 복귀 구현
+- [ ] final_interaction footprint 저장 방식 확정

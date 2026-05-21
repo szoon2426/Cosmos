@@ -1,150 +1,283 @@
 # Remaining Work Checklist
 
-이 문서는 사용자가 정리한 남은 작업 목록을 기준으로, 현재 완료/미완료 상태를 추적합니다.
+현재 구조는 3D 에셋 생성 없이 진행합니다.
 
-## 핵심 우선순위
+```text
+EEG JSON
+-> eeg_json watcher
+-> LLM instruction JSON
+-> world_spawn_json/world_xxx.json
+-> planet_spawn/planet_layout.json
+-> planet_spawn/planets_layout.json
+-> Remote Control SpawnPlanet
+-> Unreal world / galaxy spawn
+```
 
-- [x] Mock EEG JSON으로 전체 파이프라인 먼저 뚫기
-- [ ] Meshy/Tripo 중 하나 선택
-- [ ] Unreal import + spawn 자동화
-- [ ] 실패해도 시연이 안 죽게 fallback 만들기
+## 지금 완료된 것
 
-## 1. Meshy / Tripo 테스트
+- [x] 3D asset generation 중심 구조에서 분리
+- [x] `world_spawn_json/` 출력 구조 추가
+- [x] 월드별 `world_xxx.json` 저장
+- [x] `planet_spawn/planet_layout.json` 최신 planet 단일 object 저장
+- [x] `planet_spawn/planets_layout.json` 누적 planet 배열 저장
+- [x] `person_world_map.json` 사람 이름과 world id 매핑 유지
+- [x] `windows_world_pipeline/run_pipeline.py` watcher 파이프라인 추가
+- [x] `shared/` 폴더 의존성 제거
+- [x] `world_instructions/` instruction 저장 위치 추가
+- [x] Remote Control `SpawnPlanet` 호출 단계 추가
+- [x] planet 위치를 찌그러진 3D 공간 안에서 랜덤 생성
+- [x] 기존 planet과 너무 가깝지 않게 거리 검사
+- [x] LLM instruction에 `planet_mesh_type`, `planet_material_type`, `flower_color_group`, `flower_types` 필드 추가
 
-- [ ] 같은 프롬프트로 Meshy 5~10개 생성
-- [ ] 같은 프롬프트로 Tripo 5~10개 생성
-- [ ] GLB 품질 비교
-- [ ] 텍스처 품질 비교
-- [ ] Unreal import 가능 여부 확인
-- [ ] 하루 안에 1개 provider 선택
+## 1. Mac EEG + LLM
 
 현재 상태:
 
-- 아직 실제 Meshy/Tripo API 테스트는 하지 않음.
-- ComfyUI API workflow 연결 준비는 완료.
-- OpenAI 이미지 API smoke test는 결제 한도 문제로 폐기.
+- [x] `eeg.json` 파일 입력
+- [x] WebSocket EEG JSON 입력 스크립트 추가
+- [x] LLM instruction JSON 생성
+- [x] `person_name` 저장
+- [x] `planet_mesh_type` 저장
+- [x] `planet_material_type` 저장
+- [x] `flower_color_group` 저장
+- [x] `flower_types` 저장
 
-## 2. Asset Generator Wrapper
+남은 작업:
 
-- [x] `generate_asset(prompt, provider)` 형태의 wrapper 뼈대 추가
-- [x] `asset_provider` 설정 추가
-- [x] 현재 provider로 `comfyui` 연결
-- [ ] Meshy provider 구현
-- [ ] Tripo provider 구현
-- [ ] provider별 실패/성공 metadata 통일
+- [ ] `eeg-emotions v3` 실제 WebSocket 메시지 포맷 확인
+- [ ] 실제 Mac Mini에서 WebSocket 연결 테스트
+- [ ] 사람 이름 입력 방식 확정
+- [ ] instruction JSON이 Windows 공유 폴더로 안정적으로 전달되는지 확인
+- [ ] watcher가 실제 EEG WebSocket 저장 JSON을 문제없이 감지하는지 확인
 
-관련 파일:
+## 2. World Spawn JSON
 
-```text
-windows_world_pipeline/asset_generator.py
-windows_world_pipeline/pipeline_worker.py
-windows_world_pipeline/config.example.json
-```
-
-## 3. 파일 저장 규칙
-
-- [x] `world_id` 기반 저장 규칙 사용
-- [x] `world_layout.json` 생성
-- [x] `asset.glb` 역할의 world별 GLB 저장
-- [x] `preview/source image` 저장 자리 있음
-- [x] `metadata/manifest.json` 저장
-- [ ] `session_id` 개념 추가
-- [ ] processed/error/archive 폴더 규칙 추가
-
-현재 저장 구조:
+출력 위치:
 
 ```text
-shared/generated_worlds/world_0007/
-  assets/
-    world_0007_source.png
-    world_0007_transparent.png
-    world_0007.glb
-  world_0007_manifest.json
+world_spawn_json/
+  world_0001.json
+  world_0002.json
 ```
 
-## 4. Unreal 자동 Import
+현재 상태:
 
-- [x] Unreal GLB import hook 추가
-- [x] Unreal Editor Python import script 추가
-- [x] world별 고유 Unreal asset path 설계
-- [x] `mesh_asset_path`를 generated structure JSON에 추가
-- [ ] 실제 Unreal Editor에서 import command 성공 확인
-- [ ] material/texture 연결 확인
-- [ ] WorldLoader가 `mesh_asset_path`를 직접 로드하도록 수정
-- [ ] GLB/FBX 감지 일반화
+- [x] `world_spawn_json/{world_id}.json` 저장
+- [x] 기존 `world_layout.json`, `worlds_layout.json` 중심 구조에서 분리
+- [x] GLB / mesh path 의존성 제거
+- [x] 기본 월드 에셋 배치 유지
 
-관련 파일:
+남은 작업:
+
+- [ ] Unreal `SpawnWorld`가 `world_spawn_json/{world_id}.json`을 읽도록 경로 연결
+- [ ] `world_id` 입력으로 어떤 world JSON을 열지 결정
+- [ ] 기존 `world_layout.json`만 읽는 BP/WorldLoader가 있으면 새 구조에 맞게 수정
+
+## 3. Planet Spawn JSON
+
+최신 planet:
 
 ```text
-windows_world_pipeline/unreal_scripts/import_generated_glb.py
+planet_spawn/planet_layout.json
 ```
 
-현재 intended path:
+누적 planet:
 
 ```text
-/Game/Generated/{world_id}/SM_{world_id}_structure
+planet_spawn/planets_layout.json
 ```
 
-## 5. Unreal Spawn Logic
+`planet_layout.json` 형식:
 
-- [x] Python layout solver에서 zone 성격을 좌표로 변환
-- [x] scale/yaw 적용
-- [x] pond 규칙 반영
-- [x] tree 규칙 반영
-- [x] statue 필수 배치 반영
-- [x] fountain 필수 배치 반영
-- [x] pond occlusion / large rock occlusion 일부 반영
-- [ ] Unreal WorldLoader에서 `mesh_asset_path` spawn 지원
-- [ ] Remote Control `SpawnWorld` endpoint 실제 호출 확인
-- [ ] Unreal 쪽 PCG seed 적용 확인
+```json
+{
+  "planet_id": "world_0001",
+  "location": {
+    "x": -1200.0,
+    "y": 1800.0,
+    "z": -650.0
+  },
+  "scale": 0.4,
+  "mesh_type": "basic_planet",
+  "material_type": "orange"
+}
+```
 
-## 6. 전체 파이프라인 테스트
+위치 규칙:
 
-- [x] mock EEG JSON 생성
-- [x] Mac LLM instruction JSON 생성
-- [x] Windows watcher/once 처리 구조 생성
-- [x] dry-run 에셋 생성
-- [x] dry-run world layout 생성
-- [ ] 실제 LLM API 출력 확인
-- [ ] 실제 ComfyUI workflow 실행 확인
-- [ ] 실제 GLB 생성 확인
-- [ ] 실제 Unreal import 확인
-- [ ] 실제 SpawnWorld 확인
+```text
+front plane:
+x = -2000
+y = -1550 ~ 1550
+z = -900 ~ 900
 
-## 7. 실패 처리
+back plane:
+x = 300
+y = -3700 ~ 3700
+z = -2100 ~ 2100
+```
 
-- [ ] LLM JSON 깨짐 검증/복구
-- [x] dry-run fallback asset 생성
-- [x] asset generation result metadata 추가
-- [x] fallback config 자리 추가
-- [ ] 에셋 생성 실패 시 cached asset 사용
-- [ ] 다운로드 실패 retry
-- [ ] Unreal import 실패 처리
-- [ ] 실패 instruction을 error 폴더로 이동
-- [ ] 실패 시 기본 월드 표시
+생성 방식:
 
-## 8. 전시/시연용 안정화
+```text
+x = random(-2000, 300)
+t = (x - front_x) / (back_x - front_x)
+y_limit = lerp(1550, 3700, t)
+z_limit = lerp(900, 2100, t)
+y = random(-y_limit, y_limit)
+z = random(-z_limit, z_limit)
+```
 
-- [ ] 생성 대기 중 보여줄 화면
-- [x] 이전 월드 유지가 가능한 world별 mesh path 설계
-- [ ] 실패 시 기본 월드 표시
-- [ ] 너무 오래 걸리면 cached asset 사용
-- [ ] timeout 기준 정하기
-- [ ] operator용 runbook 작성
+남은 작업:
 
-## 지금 남은 진짜 핵심
+- [ ] Unreal `BP_Galaxy`가 `planet_layout.json`을 읽어 최신 planet spawn
+- [ ] Unreal `BP_Galaxy`가 `planets_layout.json`을 읽어 전체 planet 복원
+- [ ] `mesh_type`별 planet mesh 매핑
+- [ ] `material_type`별 material 매핑 확인
 
-- [ ] 실제 3D provider 결정
-- [ ] provider API로 GLB 생성 성공
-- [ ] Unreal import 실제 성공
-- [ ] WorldLoader `mesh_asset_path` 지원
-- [ ] SpawnWorld 실제 호출
-- [ ] fallback/cached asset으로 실패 방지
+사용 가능한 `material_type`:
 
-## 다음 추천 작업 순서
+```text
+yellow
+blue
+green
+orange
+purple
+gold
+red
+pink
+```
+- [x] flower mesh key를 색상 그룹 기준으로 정리
+- [x] world spawn JSON에서 유효한 flower mesh만 저장
+- [ ] planet overlap이 Unreal 화면에서 괜찮은지 실제 확인
+- [ ] 필요하면 `planet_min_distance` 값 튜닝
 
-1. `WorldLoader`에 `mesh_asset_path` 지원 추가
-2. ComfyUI API workflow를 `dry_run: false`로 한 번 실행
-3. 생성된 GLB를 Unreal 자동 import
-4. SpawnWorld 호출
-5. 실패 처리와 cached fallback 추가
+## 4. BP_Galaxy 허브
+
+목표 구조:
+
+```text
+BP_Galaxy
+ ├─ Space
+ ├─ CineCamera
+ ├─ PlanetSpawnRoot
+ ├─ PlanetMap
+ └─ Galaxy UI
+```
+
+행성용 BP:
+
+```text
+BP_WorldPlanet
+ ├─ Sphere Mesh
+ ├─ WorldID
+ ├─ LinkedWorld
+ └─ ApproachPoint(Scene Component)
+```
+
+카메라 흐름:
+
+```text
+Space 상태
+-> Galaxy Camera(Home Position)
+
+텍스트 입력
+-> world_id 찾기
+-> PlanetMap에서 target planet 찾기
+
+Galaxy Camera
+-> target planet 근처 ApproachPoint까지 lerp / timeline 이동
+
+Approach Point 도착
+-> SetViewTargetWithBlend
+-> target BP_World Camera로 전환
+
+월드 체험
+
+Return To Space
+-> Galaxy Camera 다시 활성화
+-> 저장해둔 Home Transform으로 복귀
+```
+
+중요 규칙:
+
+```text
+planet 중심까지 이동 X
+planet 표면 근처 ApproachPoint까지 이동 O
+```
+
+남은 작업:
+
+- [ ] `BP_Galaxy` 생성
+- [ ] `BP_WorldPlanet` 생성
+- [ ] `PlanetMap: world_id -> BP_WorldPlanet` 관리
+- [ ] world_id 텍스트 입력 UI
+- [ ] target planet lookup
+- [ ] Galaxy Camera home transform BeginPlay 저장
+- [ ] Galaxy Camera -> ApproachPoint timeline 이동
+- [ ] ApproachPoint 도착 후 `SetViewTargetWithBlend`
+- [ ] target BP_World Camera 연결
+- [ ] `ReturnToGalaxy()` 구현
+- [ ] 복귀 시 Galaxy Camera를 Home Transform으로 lerp
+
+## 5. SpawnPlanet / SpawnWorld 연결
+
+- [ ] `world_spawn_json/{world_id}.json` 읽기
+- [ ] `planet_id`와 `world_id`를 동일하게 사용
+- [ ] planet 선택 시 연결된 world JSON 찾기
+- [x] watcher에서 Remote Control `SpawnPlanet` 호출 코드 추가
+- [ ] Unreal에서 실제 `SpawnPlanet` 함수명 / 파라미터 확인
+- [ ] Remote Control로 `SpawnWorld` 또는 world 전환 함수 호출
+- [ ] 이미 존재하는 world와 새 world가 겹치지 않는지 확인
+- [ ] `world_number * world_space` 배치 유지 확인
+
+## 6. final_interaction footprint
+
+아직 설계가 필요한 부분입니다.
+
+추천 저장 위치:
+
+```text
+interaction_footprints/world_0001_footprint.json
+```
+
+예상 JSON:
+
+```json
+{
+  "world_id": "world_0001",
+  "person_name": "손기훈",
+  "base_vad": {"v": 0.2, "a": 0.5, "d": 0.3},
+  "final_vad": {"v": 0.7, "a": 0.8, "d": 0.4},
+  "samples": [
+    {"time": 0.0, "v": 0.2, "a": 0.5, "d": 0.3},
+    {"time": 1.0, "v": 0.3, "a": 0.6, "d": 0.35}
+  ]
+}
+```
+
+남은 작업:
+
+- [ ] footprint 저장 포맷 확정
+- [ ] `final_interaction`에서 world_id/person_name 입력 방식 확정
+- [ ] 일정 간격으로 VAD sample 기록
+- [ ] interaction 종료 시 footprint JSON 저장
+
+## 7. Three.js 시각화
+
+후순위입니다.
+
+- [ ] `planet_spawn/planets_layout.json` 읽기
+- [ ] `person_world_map.json` 읽기
+- [ ] footprint JSON 읽기
+- [ ] world별 planet / VAD trajectory 시각화
+- [ ] 특정 사람 또는 world_id 선택 UI
+
+## 다음 작업 추천 순서
+
+1. Unreal `BP_Galaxy`에서 `planet_layout.json` 읽어 planet spawn
+2. `planets_layout.json`으로 기존 planet들 복원
+3. planet 선택 시 `world_spawn_json/{world_id}.json` 찾기
+4. `SetViewTargetWithBlend` 카메라 이동/전환 구현
+5. Mac EEG WebSocket 실제 연결 확인
+6. final_interaction footprint 저장 구현

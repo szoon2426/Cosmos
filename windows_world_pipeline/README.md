@@ -1,98 +1,95 @@
-# Windows Project: ComfyUI, Hunyuan3D, Unreal World Spawn
+# Windows World Pipeline
 
-이 프로젝트는 Mac Mini가 공유 폴더에 저장한 생성 지시 JSON을 감시하고, ComfyUI로 이미지와 GLB를 만든 뒤, Unreal 에셋 import와 월드 스폰까지 이어줍니다.
+`windows_world_pipeline`은 EEG JSON을 감지해서 Unreal이 사용할 world/planet JSON을 만들고, Remote Control API로 `SpawnPlanet`을 호출하는 프로젝트입니다.
 
-## 실행
+현재는 3D asset generation을 사용하지 않습니다. 예전 ComfyUI/GLB 실험 코드는 `legacy_asset_generation/` 안에 보관되어 있습니다.
 
-```powershell
-cd windows_world_pipeline
-python -m pip install -r requirements.txt
-python pipeline_worker.py --config config.example.json
-```
-
-한 번만 처리하려면:
-
-```powershell
-python pipeline_worker.py --config config.example.json --once
-```
-
-특정 파일만 처리하려면:
-
-```powershell
-python pipeline_worker.py --config config.example.json --file ..\shared\generation_requests\world_0001.json
-```
-
-## Dry Run
-
-`config.example.json`은 기본적으로 `dry_run: true`입니다. 이 상태에서는 ComfyUI, Unreal import, SpawnWorld 없이도 파이프라인 구조를 확인할 수 있습니다.
-
-## 실제 생성 연결
-
-1. `dry_run`을 `false`로 바꿉니다.
-2. `comfyui.full_asset_workflow`에 API export workflow JSON 경로를 넣습니다.
-3. `prompt_node_id`, `negative_prompt_node_id`를 실제 workflow 노드 ID에 맞춥니다.
-4. `unreal_import.enabled`를 `true`로 바꾸고 Unreal Editor 실행 파일과 `.uproject` 경로를 맞춥니다.
-5. `unreal.enabled`를 `true`로 바꾸고 Remote Control endpoint/body를 실제 프로젝트에 맞춥니다.
-
-## Generated GLB Import
-
-ComfyUI가 만든 `*.glb`는 Unreal asset으로 import되어야 실제 월드에서 사용할 수 있습니다.
-
-현재 파이프라인은 각 월드마다 고유 경로로 GLB를 import합니다. 이전 월드가 새 mesh로 바뀌지 않게 하기 위해 고정 경로 덮어쓰기는 사용하지 않습니다.
+## Flow
 
 ```text
-/Game/Generated/world_0007/SM_world_0007_structure
+eeg_json/*.json 감지
+-> eeg_interpreter instruction 생성
+-> world_instructions/world_xxxx.json 저장
+-> world_spawn_json/world_xxxx.json 저장
+-> planet_spawn/planet_layout.json 덮어쓰기
+-> planet_spawn/planets_layout.json 누적 업데이트
+-> person_world_map.json 업데이트
+-> Unreal Remote Control SpawnPlanet 호출
+-> watch 상태로 복귀
 ```
 
-`world_layout.json`의 생성 구조물에는 `mesh_asset_path`가 추가됩니다.
+## Run
 
-```json
-{
-  "asset_key": "generated_symbolic_structure",
-  "mesh_asset_path": "/Game/Generated/world_0007/SM_world_0007_structure.SM_world_0007_structure"
-}
+프로젝트 루트에서 실행합니다.
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json
 ```
 
-Unreal `WorldLoader`는 `mesh_asset_path`가 있으면 해당 Static Mesh를 직접 로드하고, 없으면 기존 `asset_key` map을 사용하면 됩니다.
+기본 설정은 실행 전에 이미 `eeg_json/`에 있던 파일을 처리하지 않습니다. 실행 후 새 파일을 넣거나 기존 파일을 수정하면 처리합니다.
 
-자동 import 스크립트:
+이미 있는 샘플까지 처리하려면:
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --process-existing
+```
+
+한 번만 스캔하고 종료하려면:
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --once --process-existing
+```
+
+처리 기록을 초기화하고 다시 테스트하려면:
+
+```powershell
+python windows_world_pipeline\run_pipeline.py --config windows_world_pipeline\config.example.json --reset-state --process-existing
+```
+
+## Structure
 
 ```text
-unreal_scripts/import_generated_glb.py
+windows_world_pipeline/
+  run_pipeline.py
+  config.example.json
+  eeg_interpreter/
+  world_spawn/
+  legacy_asset_generation/
 ```
 
-설정 예시:
+### `run_pipeline.py`
 
-```json
-{
-  "asset_provider": "comfyui",
-  "unreal_import": {
-    "enabled": true,
-    "destination_path": "/Game/Generated/{world_id}",
-    "asset_name": "SM_{world_id}_structure",
-    "asset_object_path": "/Game/Generated/{world_id}/SM_{world_id}_structure.SM_{world_id}_structure"
-  }
-}
+메인 watcher입니다. `eeg_json/`을 감시하고, 새 EEG JSON이 들어오면 전체 파이프라인을 실행합니다.
+
+### `eeg_interpreter/`
+
+EEG/VAD를 해석해서 world instruction을 만드는 모듈입니다.
+
+현재 `dry_run: true`라 Gemini API 없이 테스트용 해석으로 동작합니다. 실제 LLM을 쓰려면 `eeg_interpreter/config.example.json`에서 `dry_run`을 `false`로 바꾸고 `GEMINI_API_KEY`를 설정합니다.
+
+### `world_spawn/`
+
+world instruction을 받아 `world_spawn_json/`, `planet_spawn/`, `person_world_map.json`을 갱신하는 모듈입니다.
+
+### `legacy_asset_generation/`
+
+이전 ComfyUI, Hunyuan3D, GLB import 실험 코드입니다. 현재 전시 파이프라인의 실행 경로에는 포함되지 않습니다.
+
+## Remote Control
+
+기본 preset:
+
+```text
+RCP_WorldVariable
 ```
 
-`asset_provider`는 현재 `comfyui`를 지원합니다. Meshy/Tripo를 선택하면 같은 wrapper에 provider 구현을 추가하면 됩니다.
+기본 함수 후보:
 
-## 월드 JSON 규칙
+```text
+Spawn Planet
+SpawnPlanet
+Spawn Planets
+SpawnPlanets
+```
 
-Unreal은 `world_number * world_space`로 BP_World 자체를 배치합니다. JSON 안의 asset 좌표는 BP_World 내부 로컬 좌표입니다.
-
-Unreal이 읽는 `world_layout.json`에는 다음 최상위 필드를 씁니다.
-
-- `world_id`
-- `world_number`
-- `world_name`
-- `seed`
-- `flower_density`
-- `flower_type`
-- `assets`
-
-앞쪽에는 작은 오브젝트만 놓고, 생성 구조물과 나무, statue, 큰 바위는 back/side 쪽에 둡니다. Pond는 1~3개를 spot 기반으로 분산 배치하고, rock path는 primary pond를 향하되 pond 안으로 들어가지 않습니다.
-
-`fountain`과 `statue`는 필수 에셋입니다. Fountain은 grass line 안쪽에 여유 있게 두고 pond를 가리지 않으며, statue는 가능한 pond 뒤쪽에 둡니다. `rock_l`, `rock_m1`, `rock_m2`는 pond 앞 시야 lane에 들어오지 않게 검사합니다.
-
-전체 두 머신 파이프라인과 남은 작업은 [`../PIPELINE_CHECKLIST.md`](../PIPELINE_CHECKLIST.md)를 기준으로 관리합니다.
+Unreal의 실제 함수명이 다르면 `config.example.json`의 `remote_control.function_display_name` 또는 `fallback_function_names`를 수정하면 됩니다.

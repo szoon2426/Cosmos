@@ -1,6 +1,6 @@
 {
   "eeg_path": "./eeg.example.json",
-  "shared_output_dir": "../shared/generation_requests",
+  "instruction_output_dir": "../../world_instructions",
   "world_counter_path": "./world_counter.txt",
   "llm": {
     "provider": "gemini",

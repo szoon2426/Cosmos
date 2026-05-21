@@ -1,0 +1,8 @@
+{
+  "world_spawn_dir": "../../world_spawn_json",
+  "planet_spawn_dir": "../../planet_spawn",
+  "vad_footprint_dir": "../../vad_footprint",
+  "person_world_map_path": "../../person_world_map.json",
+  "world_space": 2500,
+  "planet_min_distance": 900.0
+}
