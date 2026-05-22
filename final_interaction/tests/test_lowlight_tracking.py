@@ -15,6 +15,7 @@ from src.camera_preprocess import FramePreprocessor, PreprocessConfig
 from src.final_hand_features import FinalHandFeatures, actual_both_open
 from src.final_hud_state import hud_frame_state
 from src.final_mapper import compute_final_payload
+from src.final_ue_bridge import FinalUEBridge
 from src.hand_roi_rescue import CropRect, map_crop_landmarks_to_frame
 from src.realtime_inference_final import (
     BaseMemoryState,
@@ -23,6 +24,7 @@ from src.realtime_inference_final import (
     LEFT_SOLO_GRAB_HOLD_SECONDS,
     LEFT_SOLO_GRAB_SWIPE_DELTA_X,
     LEFT_SOLO_GRAB_SWIPE_VELOCITY_X,
+    LatestPersonWorld,
     PointerRuntimeState,
     VADFootprintStore,
     WorldVADState,
@@ -30,10 +32,21 @@ from src.realtime_inference_final import (
     can_recover_grab,
     end_interaction,
     left_solo_galaxy_debug_state,
+    left_solo_switch_world_id,
     recover_world_vad_after_release,
     reset_interaction_session,
+    resolve_latest_person_world,
     update_left_solo_galaxy_gesture,
 )
+
+
+class InlineExecutor:
+    def submit(self, fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        return SimpleNamespace(result=lambda: result)
+
+    def shutdown(self, wait: bool = True) -> None:
+        pass
 
 
 class LowlightTrackingTests(unittest.TestCase):
@@ -529,7 +542,7 @@ class LowlightTrackingTests(unittest.TestCase):
         update_left_solo_galaxy_gesture(
             session,
             pointer_world_active=True,
-            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.5),
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.44),
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
@@ -542,9 +555,9 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(state.left_solo_grab_elapsed, LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0)
         self.assertAlmostEqual(state.left_solo_grab_hold_progress, 0.5)
         self.assertFalse(state.left_solo_vad_restore_active)
-        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.1)
-        self.assertAlmostEqual(state.left_solo_swipe_velocity_x, 0.1 / (LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0))
-        self.assertAlmostEqual(state.left_solo_swipe_progress, 0.1 / LEFT_SOLO_GRAB_SWIPE_DELTA_X)
+        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.04)
+        self.assertAlmostEqual(state.left_solo_swipe_velocity_x, 0.04 / (LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0))
+        self.assertAlmostEqual(state.left_solo_swipe_progress, 0.04 / LEFT_SOLO_GRAB_SWIPE_DELTA_X)
         self.assertFalse(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
         self.assertFalse(state.left_solo_world_move_fired)
@@ -611,7 +624,7 @@ class LowlightTrackingTests(unittest.TestCase):
         update_left_solo_galaxy_gesture(
             session,
             pointer_world_active=True,
-            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.54),
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.5),
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
@@ -621,12 +634,143 @@ class LowlightTrackingTests(unittest.TestCase):
         state = self._left_solo_hud_state(session, 100.1 + LEFT_SOLO_GRAB_HOLD_SECONDS)
 
         self.assertTrue(state.left_solo_vad_restore_active)
-        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.14)
+        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.1)
         self.assertGreaterEqual(state.left_solo_swipe_velocity_x, LEFT_SOLO_GRAB_SWIPE_VELOCITY_X)
         self.assertEqual(state.left_solo_swipe_progress, 1.0)
         self.assertTrue(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
         self.assertTrue(state.left_solo_world_move_fired)
+
+    def test_left_solo_switch_target_is_latest_world_from_galaxy(self) -> None:
+        latest = LatestPersonWorld(world_id="world_0099", world_number=99, person_name="Latest")
+
+        self.assertEqual(left_solo_switch_world_id("galaxy", latest), "world_0099")
+        self.assertEqual(left_solo_switch_world_id("world_0001", latest), "galaxy")
+        self.assertIsNone(left_solo_switch_world_id("space", None))
+
+    def test_latest_person_world_uses_created_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            world_dir = root / "worlds"
+            world_dir.mkdir()
+            person_map = root / "person_world_map.json"
+            person_map.write_text("{}", encoding="utf-8")
+            (world_dir / "world_old.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_old",
+                        "world_number": 1,
+                        "person_name": "Old",
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (world_dir / "world_new.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_new",
+                        "world_number": 2,
+                        "person_name": "New",
+                        "created_at": "2026-05-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            latest = resolve_latest_person_world(world_dir, person_map)
+
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest.world_id, "world_new")
+            self.assertEqual(latest.world_number, 2)
+            self.assertEqual(latest.person_name, "New")
+
+    def test_latest_person_world_falls_back_to_person_map_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            world_dir = root / "worlds"
+            world_dir.mkdir()
+            (world_dir / "world_0001.json").write_text(
+                json.dumps({"world_id": "world_0001", "world_number": 1}),
+                encoding="utf-8",
+            )
+            (world_dir / "world_0002.json").write_text(
+                json.dumps({"world_id": "world_0002", "world_number": 2}),
+                encoding="utf-8",
+            )
+            person_map = root / "person_world_map.json"
+            person_map.write_text(
+                json.dumps({"Alice": "world_0001", "Bob": "world_0002"}),
+                encoding="utf-8",
+            )
+
+            latest = resolve_latest_person_world(world_dir, person_map)
+
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest.world_id, "world_0002")
+            self.assertEqual(latest.world_number, 2)
+            self.assertEqual(latest.person_name, "Bob")
+
+    def test_ue_bridge_uses_payload_switch_world_id(self) -> None:
+        bridge = FinalUEBridge(enabled=True, executor=InlineExecutor())
+        switched: list[str] = []
+        bridge.switch_to_world = lambda world_id: switched.append(world_id) or True
+        bridge._set_property = lambda property_name, value: True
+        payload = compute_final_payload(
+            interaction_active=False,
+            pointer_x=-1.0,
+            pointer_y=-1.0,
+            target_v=0.0,
+            target_a=0.0,
+            target_d=0.0,
+            grab_active=False,
+            open_strength=0.0,
+            grab_strength=0.0,
+            switch_to_camera=True,
+            switch_world_id="world_latest",
+        )
+
+        bridge.send(payload)
+
+        self.assertEqual(switched, ["world_latest"])
+
+    def test_hud_state_includes_current_and_latest_person_names(self) -> None:
+        payload = compute_final_payload(
+            interaction_active=False,
+            pointer_x=-1.0,
+            pointer_y=-1.0,
+            target_v=0.0,
+            target_a=0.0,
+            target_d=0.0,
+            grab_active=False,
+            open_strength=0.0,
+            grab_strength=0.0,
+            switch_to_camera=False,
+        )
+
+        state = hud_frame_state(
+            timestamp=1.0,
+            frame_index=0,
+            mode="idle",
+            world_active=True,
+            world_id="world_current",
+            world_number=4,
+            person_name="Current",
+            latest_person_name="Latest",
+            latest_world_id="world_latest",
+            both_visible=False,
+            both_open=False,
+            both_grab=False,
+            left_features=FinalHandFeatures(),
+            right_features=FinalHandFeatures(),
+            left_pointer_active=False,
+            right_pointer_active=False,
+            payload=payload,
+        )
+
+        self.assertEqual(state.person_name, "Current")
+        self.assertEqual(state.latest_person_name, "Latest")
+        self.assertEqual(state.latest_world_id, "world_latest")
 
     def test_world_change_loads_blended_vad_and_resets_interaction_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

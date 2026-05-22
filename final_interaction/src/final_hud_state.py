@@ -35,6 +35,9 @@ class HudFrameState:
     world_active: bool
     world_id: str | None
     world_number: int | None
+    person_name: str | None
+    latest_person_name: str | None
+    latest_world_id: str | None
     both_visible: bool
     both_open: bool
     both_grab: bool
@@ -111,6 +114,9 @@ def hud_frame_state(
     hand_count: int = 0,
     roi_rescue_count: int = 0,
     camera_props: str = "",
+    person_name: str | None = None,
+    latest_person_name: str | None = None,
+    latest_world_id: str | None = None,
     left_solo_grab_active: bool = False,
     left_solo_grab_elapsed: float = 0.0,
     left_solo_grab_hold_progress: float = 0.0,
@@ -130,6 +136,9 @@ def hud_frame_state(
         world_active=world_active,
         world_id=world_id,
         world_number=world_number,
+        person_name=person_name,
+        latest_person_name=latest_person_name,
+        latest_world_id=latest_world_id,
         both_visible=both_visible,
         both_open=both_open,
         both_grab=both_grab,

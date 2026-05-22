@@ -151,6 +151,12 @@ def _draw_core_status(frame, state: HudFrameState, *, debug: bool) -> None:
     world_label = state.world_id or "none"
     if state.world_number is not None:
         world_label = f"{world_label}#{state.world_number}"
+    if state.person_name:
+        world_label = f"{world_label}/{state.person_name}"
+    elif state.latest_person_name:
+        world_label = f"{world_label}/next:{state.latest_person_name}"
+        if state.latest_world_id:
+            world_label = f"{world_label}({state.latest_world_id})"
 
     _draw_text(
         frame,

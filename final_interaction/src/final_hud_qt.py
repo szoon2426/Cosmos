@@ -147,6 +147,20 @@ if QtWidgets is not None:
                 painter.setPen(self._pen(QtGui.QColor(230, 255, 255, 190), 1.0))
                 painter.setFont(QtGui.QFont("Arial", max(9, int(11 * scale))))
                 painter.drawText(QtCore.QRectF(cx - 40, cy + radius + 6, 80, 18), QtCore.Qt.AlignmentFlag.AlignCenter, str(state.world_number))
+            person_label = state.person_name if state.world_active else state.latest_person_name
+            if person_label:
+                label = person_label if state.world_active else f"NEXT {person_label}"
+                world_id = state.world_id if state.world_active else state.latest_world_id
+                if world_id:
+                    label = f"{label} / {world_id}"
+                painter.setPen(self._pen(QtGui.QColor(230, 255, 255, 185), 1.0))
+                painter.setFont(QtGui.QFont("Arial", max(9, int(12 * scale)), QtGui.QFont.Weight.Bold))
+                text = painter.fontMetrics().elidedText(label, QtCore.Qt.TextElideMode.ElideRight, int(260 * scale))
+                painter.drawText(
+                    QtCore.QRectF(cx - 130 * scale, cy + radius + 24 * scale, 260 * scale, 22 * scale),
+                    QtCore.Qt.AlignmentFlag.AlignCenter,
+                    text,
+                )
 
         def _draw_mode_ring(self, painter, state: HudFrameState, width: int, height: int, scale: float) -> None:
             cx = width * 0.5

@@ -22,7 +22,7 @@ if __package__ in (None, ""):
     from final_mapper import compute_final_payload
     from final_pd_bridge import FinalPDBridge
     from final_preview_overlay import draw_preview_overlay
-    from final_ue_bridge import FinalUEBridge
+    from final_ue_bridge import FinalUEBridge, SWITCH_WORLD_ID
     from hand_extractor import HandExtractor
     from hand_roi_rescue import RescueCandidate, RoiRescueConfig, hand_count, rescue_hand_results
     from pose_extractor import PoseExtractor
@@ -34,7 +34,7 @@ else:
     from .final_mapper import compute_final_payload
     from .final_pd_bridge import FinalPDBridge
     from .final_preview_overlay import draw_preview_overlay
-    from .final_ue_bridge import FinalUEBridge
+    from .final_ue_bridge import FinalUEBridge, SWITCH_WORLD_ID
     from .hand_extractor import HandExtractor
     from .hand_roi_rescue import RescueCandidate, RoiRescueConfig, hand_count, rescue_hand_results
     from .pose_extractor import PoseExtractor
@@ -51,8 +51,8 @@ POINTER_JOYSTICK_ACTIVE_ALPHA = 0.035
 POINTER_JOYSTICK_RETURN_ALPHA = 0.28
 GRAB_RECOVERY_SECONDS = 5.0
 LEFT_SOLO_GRAB_HOLD_SECONDS = 3.0
-LEFT_SOLO_GRAB_SWIPE_DELTA_X = 0.12
-LEFT_SOLO_GRAB_SWIPE_VELOCITY_X = 0.8
+LEFT_SOLO_GRAB_SWIPE_DELTA_X = 0.08
+LEFT_SOLO_GRAB_SWIPE_VELOCITY_X = 0.55
 VAD_DEADZONE_XY = 0.045
 VAD_DEADZONE_Z = 0.018
 VAD_RESPONSE_ALPHA = 0.35
@@ -139,6 +139,140 @@ def blend_vad(
         clamp(lerp(base_vad[idx], memory_vad[idx], alpha), -1.0, 1.0)
         for idx in range(3)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class LatestPersonWorld:
+    world_id: str
+    world_number: int | None
+    person_name: str
+
+
+def normalized_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def iso_datetime_timestamp(value: object) -> float | None:
+    text = normalized_text(value)
+    if text is None:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def load_person_world_candidate(
+    path: Path,
+    *,
+    fallback_person_name: str | None = None,
+) -> tuple[float, LatestPersonWorld] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        stat = path.stat()
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    world_id = normalized_text(data.get("world_id")) or normalized_text(path.stem)
+    person_name = normalized_text(data.get("person_name")) or fallback_person_name
+    if world_id is None or person_name is None:
+        return None
+
+    world_number: int | None = None
+    try:
+        world_number = int(data["world_number"])
+    except (KeyError, TypeError, ValueError):
+        world_number = None
+
+    timestamp = iso_datetime_timestamp(data.get("created_at"))
+    if timestamp is None:
+        timestamp = stat.st_mtime
+
+    return timestamp, LatestPersonWorld(
+        world_id=world_id,
+        world_number=world_number,
+        person_name=person_name,
+    )
+
+
+def resolve_latest_person_world_from_map(
+    world_json_dir: Path,
+    person_world_map_path: Path,
+) -> LatestPersonWorld | None:
+    try:
+        mapping = json.loads(person_world_map_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(mapping, dict):
+        return None
+
+    for raw_person_name, raw_world_id in reversed(list(mapping.items())):
+        person_name = normalized_text(raw_person_name)
+        world_id = normalized_text(raw_world_id)
+        if person_name is None or world_id is None:
+            continue
+        candidate = load_person_world_candidate(
+            world_json_dir / f"{world_id}.json",
+            fallback_person_name=person_name,
+        )
+        if candidate is not None:
+            return candidate[1]
+    return None
+
+
+def resolve_latest_person_world(
+    world_json_dir: Path,
+    person_world_map_path: Path,
+) -> LatestPersonWorld | None:
+    candidates: list[tuple[float, LatestPersonWorld]] = []
+    try:
+        paths = list(world_json_dir.glob("*.json"))
+    except OSError:
+        paths = []
+
+    for path in paths:
+        candidate = load_person_world_candidate(path)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+
+    return resolve_latest_person_world_from_map(world_json_dir, person_world_map_path)
+
+
+@dataclass(slots=True)
+class LatestPersonWorldResolver:
+    world_json_dir: Path
+    person_world_map_path: Path
+    refresh_interval_sec: float = 0.5
+    latest: LatestPersonWorld | None = None
+    next_refresh_at: float = 0.0
+
+    def get(self, now: float) -> LatestPersonWorld | None:
+        if self.latest is None or now >= self.next_refresh_at:
+            self.latest = resolve_latest_person_world(self.world_json_dir, self.person_world_map_path)
+            self.next_refresh_at = now + self.refresh_interval_sec
+        return self.latest
+
+
+def left_solo_switch_world_id(
+    current_world_id: str | None,
+    latest_person_world: LatestPersonWorld | None,
+) -> str | None:
+    if is_space_world_id(current_world_id):
+        return latest_person_world.world_id if latest_person_world is not None else None
+    return SWITCH_WORLD_ID
 
 
 @dataclass(slots=True)
@@ -366,6 +500,7 @@ class WorldVADState:
     poll_interval_sec: float = 0.1
     current_world_id: str | None = None
     current_world_number: int | None = None
+    current_person_name: str | None = None
     next_poll_at: float = 0.0
     poll_future: Future[str | None] | None = None
     poll_executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
@@ -399,6 +534,7 @@ class WorldVADState:
             self.footprint_store.clear_active_world()
             self.current_world_id = world_id
             self.current_world_number = None
+            self.current_person_name = None
             print(f"[final_interaction] current space -> {world_id}")
             return True
         if not world_id:
@@ -409,11 +545,12 @@ class WorldVADState:
             print(f"[final_interaction] world json not found or invalid -> {world_id}")
             return False
 
-        vad, world_number = world_data
+        vad, world_number, person_name = world_data
         current_vad = self.footprint_store.load_world(world_id, vad)
         memory.set_base(*current_vad)
         self.current_world_id = world_id
         self.current_world_number = world_number
+        self.current_person_name = person_name
         print(
             "[final_interaction] current world -> "
             f"{world_id} current_vad=({current_vad[0]:.3f}, {current_vad[1]:.3f}, {current_vad[2]:.3f})"
@@ -423,7 +560,7 @@ class WorldVADState:
     def is_world_active(self) -> bool:
         return self.current_world_id is not None and self.current_world_number is not None
 
-    def _load_world_data(self, world_id: str) -> tuple[tuple[float, float, float], int] | None:
+    def _load_world_data(self, world_id: str) -> tuple[tuple[float, float, float], int, str | None] | None:
         path = self.world_json_dir / f"{world_id}.json"
         if not path.exists():
             return None
@@ -444,7 +581,8 @@ class WorldVADState:
                 float(base_vad["dominance"]),
             )
             world_number = int(data["world_number"])
-            return vad, world_number
+            person_name = normalized_text(data.get("person_name"))
+            return vad, world_number, person_name
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -872,6 +1010,12 @@ def main() -> None:
         help="Directory containing world_XXXX.json files with base_vad.",
     )
     parser.add_argument(
+        "--person-world-map",
+        type=Path,
+        default=Path(__file__).resolve().parents[2] / "person_world_map.json",
+        help="JSON map from person names to world ids.",
+    )
+    parser.add_argument(
         "--world-poll-sec",
         type=float,
         default=0.1,
@@ -1004,6 +1148,10 @@ def main() -> None:
         footprint_store=footprint_store,
         poll_interval_sec=max(0.1, args.world_poll_sec),
     )
+    latest_person_world_resolver = LatestPersonWorldResolver(
+        world_json_dir=args.world_json_dir,
+        person_world_map_path=args.person_world_map,
+    )
     session = InteractionSession()
     pointer_state = PointerRuntimeState()
     hud = FinalHudController(
@@ -1078,6 +1226,7 @@ def main() -> None:
             right_features = right_tracker.update(hand_results, pose_landmarks, now)
             left_features = left_tracker.update(hand_results, pose_landmarks, now)
             switch_to_camera = False
+            switch_world_id: str | None = None
             was_active = session.active
             world_changed = args.send and world_vad_state.poll_unreal(ue, memory, now)
             if world_changed:
@@ -1094,6 +1243,8 @@ def main() -> None:
                     pd_mode = desired_pd_mode
             base_vad = memory.current_base()
             pointer_world_active = world_vad_state.is_world_active()
+            latest_person_world = latest_person_world_resolver.get(now)
+            left_solo_gesture_enabled = pointer_world_active or is_space_world_id(world_vad_state.current_world_id)
             both_visible = right_features.visible and left_features.visible
             both_open = actual_both_open(right_features, left_features)
             both_grab = actual_both_grab(right_features, left_features)
@@ -1221,22 +1372,35 @@ def main() -> None:
                 world_vad = recover_world_vad_after_release(session, memory, world_vad, now)
 
             raw_world_base_vad = footprint_store.base_vad if footprint_store.base_vad is not None else memory.current_base()
-            world_vad, left_solo_switch_to_camera = update_left_solo_galaxy_gesture(
+            world_vad, left_solo_switch_requested = update_left_solo_galaxy_gesture(
                 session,
-                pointer_world_active=pointer_world_active,
+                pointer_world_active=left_solo_gesture_enabled,
                 left_features=left_features,
                 right_features=right_features,
                 world_vad=world_vad,
                 world_base_vad=raw_world_base_vad,
                 now=now,
             )
-            switch_to_camera = switch_to_camera or left_solo_switch_to_camera
+            if left_solo_switch_requested:
+                switch_world_id = left_solo_switch_world_id(
+                    world_vad_state.current_world_id,
+                    latest_person_world,
+                )
+                switch_to_camera = switch_world_id is not None
+                if switch_world_id is None:
+                    session.left_solo_grab_fired = False
 
-            if switch_to_camera:
-                footprint_store.record_interaction(world_vad, "switch_to_galaxy")
-                if args.send_pd and pd_mode != "space":
-                    pd.set_space_mode()
-                    pd_mode = "space"
+            if switch_world_id is not None:
+                reason = "switch_to_galaxy" if is_space_world_id(switch_world_id) else "switch_to_latest_person_world"
+                footprint_store.record_interaction(world_vad, reason)
+                if args.send_pd:
+                    switch_pd_mode = "space" if is_space_world_id(switch_world_id) else "world"
+                    if switch_pd_mode != pd_mode:
+                        if switch_pd_mode == "space":
+                            pd.set_space_mode()
+                        else:
+                            pd.set_world_mode()
+                        pd_mode = switch_pd_mode
 
             left_solo_debug = left_solo_galaxy_debug_state(session, now)
             session.last_z = avg_z
@@ -1298,6 +1462,7 @@ def main() -> None:
                 open_strength=avg_open,
                 grab_strength=avg_grab,
                 switch_to_camera=switch_to_camera,
+                switch_world_id=switch_world_id,
                 l_grip=left_pointer_grip,
                 r_grip=right_pointer_grip,
                 l_y_location=left_pointer_y,
@@ -1312,6 +1477,9 @@ def main() -> None:
                 world_active=pointer_world_active,
                 world_id=world_vad_state.current_world_id,
                 world_number=world_vad_state.current_world_number,
+                person_name=world_vad_state.current_person_name,
+                latest_person_name=latest_person_world.person_name if latest_person_world is not None else None,
+                latest_world_id=latest_person_world.world_id if latest_person_world is not None else None,
                 both_visible=both_visible,
                 both_open=both_open,
                 both_grab=both_grab,

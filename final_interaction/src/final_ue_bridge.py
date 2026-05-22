@@ -51,7 +51,7 @@ class FinalUEBridge:
     executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
     lock: threading.Lock = field(default_factory=threading.Lock)
     pending_payload: FinalInteractionPayload | None = None
-    pending_switch_to_world: bool = False
+    pending_switch_world_id: str | None = None
     worker_running: bool = False
     switch_function_cache: tuple[str, str] | None = None
     last_sent_values: dict[str, float] = field(default_factory=dict)
@@ -72,7 +72,7 @@ class FinalUEBridge:
         with self.lock:
             self.pending_payload = payload
             if payload.switch_to_camera > 0.5:
-                self.pending_switch_to_world = True
+                self.pending_switch_world_id = self._payload_switch_world_id(payload)
             if self.worker_running:
                 return
             self.worker_running = True
@@ -83,10 +83,10 @@ class FinalUEBridge:
         while True:
             with self.lock:
                 payload = self.pending_payload
-                switch_to_world = self.pending_switch_to_world
+                switch_world_id = self.pending_switch_world_id
                 self.pending_payload = None
-                self.pending_switch_to_world = False
-                if payload is None and not switch_to_world:
+                self.pending_switch_world_id = None
+                if payload is None and switch_world_id is None:
                     self.worker_running = False
                     return
 
@@ -95,8 +95,13 @@ class FinalUEBridge:
                     if not self._set_property(property_name, value):
                         break
 
-            if switch_to_world:
-                self.switch_to_world(SWITCH_WORLD_ID)
+            if switch_world_id is not None:
+                self.switch_to_world(switch_world_id)
+
+    @staticmethod
+    def _payload_switch_world_id(payload: FinalInteractionPayload) -> str:
+        world_id = (payload.switch_world_id or "").strip()
+        return world_id or SWITCH_WORLD_ID
 
     def _set_property(self, property_name: str, value: float) -> bool:
         previous = self.last_sent_values.get(property_name)

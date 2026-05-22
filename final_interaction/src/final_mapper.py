@@ -36,6 +36,7 @@ class FinalInteractionPayload:
     l_z_location: float
     r_y_location: float
     r_z_location: float
+    switch_world_id: str | None = None
 
     def as_preset_properties(self) -> dict[str, float]:
         return {
@@ -73,6 +74,7 @@ def compute_final_payload(
     l_z_location: float = 160.0,
     r_y_location: float = 40.0,
     r_z_location: float = 160.0,
+    switch_world_id: str | None = None,
 ) -> FinalInteractionPayload:
     target_v = clamp(target_v, -1.0, 1.0)
     target_a = clamp(target_a, -1.0, 1.0)
@@ -104,4 +106,5 @@ def compute_final_payload(
         l_z_location=l_z_location,
         r_y_location=r_y_location,
         r_z_location=r_z_location,
+        switch_world_id=switch_world_id,
     )
