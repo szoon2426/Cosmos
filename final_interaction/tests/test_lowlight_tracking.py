@@ -21,6 +21,7 @@ from src.realtime_inference_final import (
     GRAB_RECOVERY_SECONDS,
     InteractionSession,
     LEFT_SOLO_GRAB_SWIPE_DELTA_X,
+    LEFT_SOLO_GRAB_SWIPE_VELOCITY_X,
     PointerRuntimeState,
     VADFootprintStore,
     WorldVADState,
@@ -609,7 +610,7 @@ class LowlightTrackingTests(unittest.TestCase):
         update_left_solo_galaxy_gesture(
             session,
             pointer_world_active=True,
-            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.64),
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.54),
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
@@ -619,8 +620,8 @@ class LowlightTrackingTests(unittest.TestCase):
         state = self._left_solo_hud_state(session, 105.1)
 
         self.assertTrue(state.left_solo_vad_restore_active)
-        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.24)
-        self.assertGreaterEqual(state.left_solo_swipe_velocity_x, 1.2)
+        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.14)
+        self.assertGreaterEqual(state.left_solo_swipe_velocity_x, LEFT_SOLO_GRAB_SWIPE_VELOCITY_X)
         self.assertEqual(state.left_solo_swipe_progress, 1.0)
         self.assertTrue(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
