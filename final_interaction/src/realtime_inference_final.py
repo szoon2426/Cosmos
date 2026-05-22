@@ -5,7 +5,8 @@ import json
 import math
 import sys
 import time
-from dataclasses import dataclass
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -180,7 +181,7 @@ class InteractionSession:
 
 @dataclass(slots=True)
 class PointerRuntimeState:
-    world_id: str | None = None
+    world_number: int | None = None
     left_y: float = POINTER_BASE_Y + POINTER_LEFT_ANCHOR_OFFSET_Y
     left_z: float = POINTER_ANCHOR_Z
     right_y: float = POINTER_BASE_Y + POINTER_RIGHT_ANCHOR_OFFSET_Y
@@ -189,16 +190,16 @@ class PointerRuntimeState:
     def update(
         self,
         *,
-        world_id: str | None,
+        world_number: int | None,
         left_target: tuple[float, float],
         right_target: tuple[float, float],
         left_active: bool,
         right_active: bool,
     ) -> tuple[tuple[float, float], tuple[float, float]]:
-        if world_id != self.world_id:
-            self.world_id = world_id
-            self.left_y, self.left_z = pointer_anchor_y(world_id, "left"), POINTER_ANCHOR_Z
-            self.right_y, self.right_z = pointer_anchor_y(world_id, "right"), POINTER_ANCHOR_Z
+        if world_number != self.world_number:
+            self.world_number = world_number
+            self.left_y, self.left_z = pointer_anchor_y(world_number, "left"), POINTER_ANCHOR_Z
+            self.right_y, self.right_z = pointer_anchor_y(world_number, "right"), POINTER_ANCHOR_Z
 
         left_alpha = POINTER_JOYSTICK_ACTIVE_ALPHA if left_active else POINTER_JOYSTICK_RETURN_ALPHA
         right_alpha = POINTER_JOYSTICK_ACTIVE_ALPHA if right_active else POINTER_JOYSTICK_RETURN_ALPHA
@@ -339,44 +340,71 @@ class WorldVADState:
     footprint_store: VADFootprintStore
     poll_interval_sec: float = 0.1
     current_world_id: str | None = None
+    current_world_number: int | None = None
     next_poll_at: float = 0.0
+    poll_future: Future[str | None] | None = None
+    poll_executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
 
     def poll_unreal(self, ue: FinalUEBridge, memory: BaseMemoryState, now: float) -> bool:
-        if now < self.next_poll_at:
-            return False
+        changed = False
+
+        if self.poll_future is not None and self.poll_future.done():
+            try:
+                world_id = self.poll_future.result()
+            except Exception:
+                world_id = None
+            self.poll_future = None
+            changed = self._apply_world_id(world_id, memory)
+
+        if self.poll_future is not None or now < self.next_poll_at:
+            return changed
 
         self.next_poll_at = now + self.poll_interval_sec
-        world_id = ue.get_current_world_id()
-        if world_id and not world_id.startswith("world_"):
-            self.footprint_store.commit_pending(memory, "space_switch")
-            if world_id != self.current_world_id:
-                self.current_world_id = world_id
-                print(f"[final_interaction] current space -> {world_id}")
-            return False
-        if not world_id or world_id == self.current_world_id:
+        self.poll_future = self.poll_executor.submit(ue.get_current_world_id)
+        return changed
+
+    def close(self) -> None:
+        self.poll_executor.shutdown(wait=False)
+
+    def _apply_world_id(self, world_id: str | None, memory: BaseMemoryState) -> bool:
+        if world_id == self.current_world_id:
             return False
 
-        vad = self._load_base_vad(world_id)
-        if vad is None:
+        if is_space_world_id(world_id):
+            self.footprint_store.commit_pending(memory, "space_switch")
+            self.current_world_id = world_id
+            self.current_world_number = None
+            print(f"[final_interaction] current space -> {world_id}")
+            return False
+        if not world_id:
+            return False
+
+        world_data = self._load_world_data(world_id)
+        if world_data is None:
             print(f"[final_interaction] world json not found or invalid -> {world_id}")
             return False
 
+        vad, world_number = world_data
         current_vad = self.footprint_store.load_world(world_id, vad)
         memory.set_base(*current_vad)
         self.current_world_id = world_id
+        self.current_world_number = world_number
         print(
             "[final_interaction] current world -> "
             f"{world_id} current_vad=({current_vad[0]:.3f}, {current_vad[1]:.3f}, {current_vad[2]:.3f})"
         )
         return True
 
-    def _load_base_vad(self, world_id: str) -> tuple[float, float, float] | None:
+    def is_world_active(self) -> bool:
+        return self.current_world_id is not None and self.current_world_number is not None
+
+    def _load_world_data(self, world_id: str) -> tuple[tuple[float, float, float], int] | None:
         path = self.world_json_dir / f"{world_id}.json"
         if not path.exists():
             return None
 
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -385,11 +413,13 @@ class WorldVADState:
             return None
 
         try:
-            return (
+            vad = (
                 float(base_vad["valence"]),
                 float(base_vad["arousal"]),
                 float(base_vad["dominance"]),
             )
+            world_number = int(data["world_number"])
+            return vad, world_number
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -454,24 +484,26 @@ def midpoint(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, flo
     return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
 
 
+def is_space_world_id(world_id: str | None) -> bool:
+    if not world_id:
+        return False
+    return world_id.strip().lower() in {"galaxy", "space", "none", "null"}
+
+
 def pd_mode_from_world_id(world_id: str | None) -> str | None:
     if not world_id:
         return None
-    return "world" if world_id.startswith("world_") else "space"
+    return "space" if is_space_world_id(world_id) else "world"
 
 
-def pointer_y_from_world_id(world_id: str | None) -> float:
-    if not world_id or not world_id.startswith("world_"):
-        return POINTER_BASE_Y
-    try:
-        world_number = int(world_id.removeprefix("world_"))
-    except ValueError:
+def pointer_y_from_world_number(world_number: int | None) -> float:
+    if world_number is None:
         return POINTER_BASE_Y
     return POINTER_BASE_Y + world_number * POINTER_WORLD_SPACE_Y
 
 
-def pointer_anchor_y(world_id: str | None, side: str) -> float:
-    center_y = pointer_y_from_world_id(world_id)
+def pointer_anchor_y(world_number: int | None, side: str) -> float:
+    center_y = pointer_y_from_world_number(world_number)
     if side == "left":
         return center_y + POINTER_LEFT_ANCHOR_OFFSET_Y
     return center_y + POINTER_RIGHT_ANCHOR_OFFSET_Y
@@ -492,7 +524,7 @@ def clamp_offset_to_circle(offset_y: float, offset_z: float, radius: float) -> t
 
 def joystick_pointer_location(
     *,
-    world_id: str | None,
+    world_number: int | None,
     side: str,
     hand_x: float,
     hand_y: float,
@@ -500,7 +532,7 @@ def joystick_pointer_location(
     anchor_y: float,
     active: bool,
 ) -> tuple[float, float]:
-    anchor_world_y = pointer_anchor_y(world_id, side)
+    anchor_world_y = pointer_anchor_y(world_number, side)
     if not active:
         return anchor_world_y, POINTER_ANCHOR_Z
 
@@ -559,12 +591,39 @@ def main() -> None:
         default=Path(__file__).resolve().parents[2] / "vad_footprint",
         help="Directory where per-world VAD footprint JSON files are stored.",
     )
+    parser.add_argument("--camera-width", type=int, default=640, help="Requested webcam capture width.")
+    parser.add_argument("--camera-height", type=int, default=360, help="Requested webcam capture height.")
+    parser.add_argument("--camera-fps", type=int, default=30, help="Requested webcam FPS.")
+    parser.add_argument(
+        "--pose-every",
+        type=int,
+        default=3,
+        help="Run pose detection every N frames. Use 1 for maximum accuracy, 0 to disable pose fallback.",
+    )
+    parser.add_argument(
+        "--debug-overlay",
+        action="store_true",
+        help="Draw detailed debug labels on the camera preview. Slower, so keep off for exhibition.",
+    )
+    parser.add_argument(
+        "--perf-log-sec",
+        type=float,
+        default=0.0,
+        help="Print loop FPS and stage timings every N seconds when greater than 0.",
+    )
     args = parser.parse_args()
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         print(f"[ERROR] camera {args.camera} could not be opened")
         sys.exit(1)
+    if args.camera_width > 0:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.camera_width)
+    if args.camera_height > 0:
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.camera_height)
+    if args.camera_fps > 0:
+        cap.set(cv2.CAP_PROP_FPS, args.camera_fps)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     hand_extractor = HandExtractor()
     pose_extractor = PoseExtractor()
@@ -585,6 +644,11 @@ def main() -> None:
     pointer_state = PointerRuntimeState()
     world_vad = memory.current_base()
     pd_mode: str | None = None
+    frame_index = 0
+    last_pose_landmarks: dict[str, tuple[float, float]] | None = None
+    perf_last_at = time.perf_counter()
+    perf_frames = 0
+    perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0}
 
     if args.send_pd:
         pd.send_value("READY_MODE", 0.0)
@@ -604,7 +668,9 @@ def main() -> None:
 
     try:
         while True:
+            loop_started = time.perf_counter()
             ok, frame = cap.read()
+            after_capture = time.perf_counter()
             if not ok:
                 time.sleep(0.03)
                 continue
@@ -612,9 +678,20 @@ def main() -> None:
             now = time.time()
             frame = cv2.flip(frame, 1)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pose_results = pose_extractor.process(frame_rgb)
-            pose_landmarks = pose_extractor.extract_upper_body(pose_results)
+
+            pose_started = time.perf_counter()
+            if args.pose_every <= 0:
+                pose_landmarks = None
+            elif frame_index % args.pose_every == 0:
+                pose_results = pose_extractor.process(frame_rgb)
+                last_pose_landmarks = pose_extractor.extract_upper_body(pose_results)
+                pose_landmarks = last_pose_landmarks
+            else:
+                pose_landmarks = last_pose_landmarks
+            after_pose = time.perf_counter()
+
             hand_results = hand_extractor.process(frame_rgb)
+            after_hand = time.perf_counter()
             right_features = right_tracker.update(hand_results, pose_landmarks, now)
             left_features = left_tracker.update(hand_results, pose_landmarks, now)
             switch_to_camera = False
@@ -629,13 +706,14 @@ def main() -> None:
                         pd.set_world_mode()
                     pd_mode = desired_pd_mode
             base_vad = memory.current_base()
-            pointer_world_active = world_vad_state.current_world_id is not None and world_vad_state.current_world_id.startswith("world_")
+            pointer_world_active = world_vad_state.is_world_active()
             both_visible = right_features.visible and left_features.visible
             both_open = (
                 pointer_world_active
                 and both_visible
-                and right_features.open_strength >= 0.70
-                and left_features.open_strength >= 0.70
+                and right_features.open_strength >= 0.62
+                and left_features.open_strength >= 0.62
+                and (right_features.open_strength + left_features.open_strength) * 0.5 >= 0.72
             )
             both_grab = pointer_world_active and both_visible and right_features.grab_active and left_features.grab_active
 
@@ -680,7 +758,7 @@ def main() -> None:
                 session.retreat_started_at = None
                 session.lost_started_at = None
             elif not session.active:
-                if both_open and avg_z >= -0.05:
+                if both_open:
                     if session.engaged_at is None:
                         session.engaged_at = now
                     elif now - session.engaged_at >= 0.08:
@@ -800,7 +878,7 @@ def main() -> None:
                 session.right_pointer_locked = False
 
             left_pointer_target = joystick_pointer_location(
-                world_id=world_vad_state.current_world_id,
+                world_number=world_vad_state.current_world_number,
                 side="left",
                 hand_x=left_features.x,
                 hand_y=left_features.y,
@@ -809,7 +887,7 @@ def main() -> None:
                 active=left_pointer_active,
             )
             right_pointer_target = joystick_pointer_location(
-                world_id=world_vad_state.current_world_id,
+                world_number=world_vad_state.current_world_number,
                 side="right",
                 hand_x=right_features.x,
                 hand_y=right_features.y,
@@ -818,7 +896,7 @@ def main() -> None:
                 active=right_pointer_active,
             )
             (left_pointer_y, left_pointer_z), (right_pointer_y, right_pointer_z) = pointer_state.update(
-                world_id=world_vad_state.current_world_id,
+                world_number=world_vad_state.current_world_number,
                 left_target=left_pointer_target,
                 right_target=right_pointer_target,
                 left_active=left_pointer_active,
@@ -858,112 +936,81 @@ def main() -> None:
 
                 pd.send_payload(payload)
 
-            draw_hand_overlay(frame, hand_results)
-            h, w = frame.shape[:2]
-            cx = int(clamp(pointer_x, 0.0, 1.0) * w)
-            cy = int(clamp(pointer_y, 0.0, 1.0) * h)
-            if session.active and both_visible:
-                color = (70, 240, 160) if payload.grab_active > 0.5 else (255, 210, 120)
-                radius = max(10, int(18 + avg_radius * 28))
-                cv2.circle(frame, (cx, cy), radius, color, 2, cv2.LINE_AA)
-                cv2.circle(frame, (cx, cy), max(4, radius // 5), color, -1, cv2.LINE_AA)
+            after_logic = time.perf_counter()
+            if args.debug_overlay:
+                draw_hand_overlay(frame, hand_results)
+                h, w = frame.shape[:2]
+                cx = int(clamp(pointer_x, 0.0, 1.0) * w)
+                cy = int(clamp(pointer_y, 0.0, 1.0) * h)
+                if session.active and both_visible:
+                    color = (70, 240, 160) if payload.grab_active > 0.5 else (255, 210, 120)
+                    radius = max(10, int(18 + avg_radius * 28))
+                    cv2.circle(frame, (cx, cy), radius, color, 2, cv2.LINE_AA)
+                    cv2.circle(frame, (cx, cy), max(4, radius // 5), color, -1, cv2.LINE_AA)
+
                 cv2.putText(
                     frame,
-                    "CONTROL",
-                    (cx + 10, cy + radius + 18),
+                    (
+                        f"mode={session.mode} active={session.active} "
+                        f"V={payload.target_v:.2f} A={payload.target_a:.2f} D={payload.target_d:.2f}"
+                    ),
+                    (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
+                    0.62,
+                    (0, 245, 255),
                     2,
                     cv2.LINE_AA,
                 )
-
-            cv2.putText(
-                frame,
-                "FINAL_0505 GRAB / OPEN",
-                (20, 40),
-                cv2.FONT_HERSHEY_DUPLEX,
-                0.9,
-                (0, 245, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                (
-                    f"mode={session.mode} active={session.active} "
-                    f"both_visible={both_visible} both_open={both_open} both_grab={both_grab}"
-                ),
-                (20, 76),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                f"pointer=({payload.pointer_x:.2f}, {payload.pointer_y:.2f}) z={avg_z:.2f} speed={avg_speed:.2f}",
-                (20, 106),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                (235, 235, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                f"grab={payload.grab_strength:.2f} open={payload.open_strength:.2f} camera_switch={bool(payload.switch_to_camera)}",
-                (20, 136),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                (220, 245, 220),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                f"V={payload.target_v:.2f} A={payload.target_a:.2f} D={payload.target_d:.2f}",
-                (20, 166),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                (140, 230, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                f"thrust_ready={session.thrust_ready} retreat_hold={session.retreat_started_at is not None}",
-                (20, 196),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.58,
-                (255, 205, 120),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                (
-                    f"R-hand O={right_features.open_strength:.2f} G={right_features.grab_strength:.2f} "
-                    f"L-hand O={left_features.open_strength:.2f} G={left_features.grab_strength:.2f}"
-                ),
-                (20, 224),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.58,
-                (255, 225, 140),
-                2,
-                cv2.LINE_AA,
-            )
+                cv2.putText(
+                    frame,
+                    (
+                        f"world={pointer_world_active} visible={both_visible} both_open={both_open} "
+                        f"RO={right_features.open_strength:.2f} LO={left_features.open_strength:.2f} z={avg_z:.2f}"
+                    ),
+                    (20, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    (220, 245, 220),
+                    2,
+                    cv2.LINE_AA,
+                )
+            after_draw = time.perf_counter()
 
             cv2.imshow("Cosmos Final 0505", frame)
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")):
                 break
+
+            frame_index += 1
+            if args.perf_log_sec > 0:
+                perf_frames += 1
+                perf_acc["capture"] += after_capture - loop_started
+                perf_acc["pose"] += after_pose - pose_started
+                perf_acc["hand"] += after_hand - after_pose
+                perf_acc["logic"] += after_logic - after_hand
+                perf_acc["draw"] += after_draw - after_logic
+                perf_now = time.perf_counter()
+                elapsed = perf_now - perf_last_at
+                if elapsed >= args.perf_log_sec:
+                    fps = perf_frames / max(elapsed, 1e-6)
+                    print(
+                        "[final_interaction] perf "
+                        f"fps={fps:.1f} "
+                        f"capture={perf_acc['capture'] / perf_frames * 1000:.1f}ms "
+                        f"pose={perf_acc['pose'] / perf_frames * 1000:.1f}ms "
+                        f"hand={perf_acc['hand'] / perf_frames * 1000:.1f}ms "
+                        f"logic={perf_acc['logic'] / perf_frames * 1000:.1f}ms "
+                        f"draw={perf_acc['draw'] / perf_frames * 1000:.1f}ms"
+                    )
+                    perf_last_at = perf_now
+                    perf_frames = 0
+                    perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0}
     finally:
         cap.release()
         cv2.destroyAllWindows()
         hand_extractor.close()
         pose_extractor.close()
+        world_vad_state.close()
         ue.stop()
         pd.stop()
 

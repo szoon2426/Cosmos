@@ -105,11 +105,11 @@ def test_generate_world_creates_outputs(monkeypatch, tmp_path):
     monkeypatch.setenv("PIPELINE_CONFIG", str(write_test_config(tmp_path)))
 
     with TestClient(app) as client:
-        response = client.post("/generate/test-world-001", json=sample_payload())
+        response = client.post("/generate", json=sample_payload())
 
     assert response.status_code == 201
     body = response.json()
-    assert body["world_id"] == "test-world-001"
+    assert body["world_id"] == "world_0001"
     assert Path(body["instruction_path"]).exists()
     assert Path(body["world_spawn_path"]).exists()
     assert Path(body["planet_layout_path"]).exists()
@@ -117,7 +117,7 @@ def test_generate_world_creates_outputs(monkeypatch, tmp_path):
     assert Path(body["vad_footprint_path"]).exists()
 
     instruction = json.loads(Path(body["instruction_path"]).read_text(encoding="utf-8"))
-    assert instruction["world_id"] == "test-world-001"
+    assert instruction["world_id"] == "world_0001"
     assert instruction["person_name"] == "백인호"
     assert instruction["world_number"] == 1
 
@@ -126,19 +126,20 @@ def test_generate_world_rejects_duplicate_id(monkeypatch, tmp_path):
     monkeypatch.setenv("PIPELINE_CONFIG", str(write_test_config(tmp_path)))
 
     with TestClient(app) as client:
-        first = client.post("/generate/test-world-001", json=sample_payload())
-        second = client.post("/generate/test-world-001", json=sample_payload())
+        first = client.post("/generate", json=sample_payload())
+        second = client.post("/generate/world_0001", json=sample_payload())
 
     assert first.status_code == 201
-    assert second.status_code == 409
+    assert second.status_code == 201
+    assert second.json()["world_id"] == "world_0002"
 
 
 def test_generate_world_increments_world_number(monkeypatch, tmp_path):
     monkeypatch.setenv("PIPELINE_CONFIG", str(write_test_config(tmp_path)))
 
     with TestClient(app) as client:
-        first = client.post("/generate/test-world-001", json=sample_payload())
-        second = client.post("/generate/test-world-002", json=sample_payload())
+        first = client.post("/generate", json=sample_payload())
+        second = client.post("/generate", json=sample_payload())
 
     assert first.status_code == 201
     assert second.status_code == 201
@@ -157,7 +158,7 @@ def test_generate_world_rejects_failed_payload(monkeypatch, tmp_path):
     payload["error"] = {"code": "failed", "message": "inference failed", "stage": "inferring"}
 
     with TestClient(app) as client:
-        response = client.post("/generate/test-world-002", json=payload)
+        response = client.post("/generate", json=payload)
 
     assert response.status_code == 422
 
@@ -168,7 +169,7 @@ def test_generate_world_rejects_missing_result(monkeypatch, tmp_path):
     payload["result"] = None
 
     with TestClient(app) as client:
-        response = client.post("/generate/test-world-003", json=payload)
+        response = client.post("/generate", json=payload)
 
     assert response.status_code == 422
 
@@ -179,15 +180,16 @@ def test_generate_world_rejects_invalid_vad_raw(monkeypatch, tmp_path):
     payload["result"]["vad_raw"] = [0.1, 0.2]
 
     with TestClient(app) as client:
-        response = client.post("/generate/test-world-004", json=payload)
+        response = client.post("/generate", json=payload)
 
     assert response.status_code == 422
 
 
-def test_generate_world_rejects_invalid_world_id(monkeypatch, tmp_path):
+def test_generate_world_deprecated_path_ignores_supplied_world_id(monkeypatch, tmp_path):
     monkeypatch.setenv("PIPELINE_CONFIG", str(write_test_config(tmp_path)))
 
     with TestClient(app) as client:
         response = client.post("/generate/test.world", json=sample_payload())
 
-    assert response.status_code == 422
+    assert response.status_code == 201
+    assert response.json()["world_id"] == "world_0001"

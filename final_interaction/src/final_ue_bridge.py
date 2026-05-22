@@ -46,7 +46,7 @@ PROPERTY_PRIORITY = (
 @dataclass
 class FinalUEBridge:
     enabled: bool = True
-    timeout_sec: float = 1.0
+    timeout_sec: float = 0.5
     session: requests.Session = field(default_factory=requests.Session)
     executor: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(max_workers=1))
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -92,15 +92,16 @@ class FinalUEBridge:
 
             if payload is not None:
                 for property_name, value in self._ordered_properties(payload):
-                    self._set_property(property_name, value)
+                    if not self._set_property(property_name, value):
+                        break
 
             if switch_to_world:
                 self.switch_to_world(SWITCH_WORLD_ID)
 
-    def _set_property(self, property_name: str, value: float) -> None:
+    def _set_property(self, property_name: str, value: float) -> bool:
         previous = self.last_sent_values.get(property_name)
         if previous is not None and abs(previous - value) < self._change_threshold(property_name):
-            return
+            return True
 
         url = PROPERTY_URL_TEMPLATE.format(property_name=quote(property_name, safe=""))
         try:
@@ -112,10 +113,12 @@ class FinalUEBridge:
                 )
             else:
                 self.last_sent_values[property_name] = value
+            return True
         except requests.exceptions.Timeout:
             print(f"[interaction3-final] UE timeout -> {property_name}")
+            return False
         except requests.exceptions.ConnectionError:
-            pass
+            return False
 
     def _ordered_properties(self, payload: FinalInteractionPayload) -> list[tuple[str, float]]:
         properties = payload.as_preset_properties()

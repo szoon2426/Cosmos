@@ -222,6 +222,10 @@ def process_eeg_file(path: Path, config: dict[str, Any], config_dir: Path, remot
     mac_config_path = resolve_config_path(config_dir, config.get("eeg_interpreter_config", config.get("mac_config", "./eeg_interpreter/config.example.json")))
     world_config_path = resolve_config_path(config_dir, config["world_spawn_config"])
     instruction_output_dir = str(resolve_config_path(config_dir, config["instruction_output_dir"]))
+    world_config = read_json(world_config_path, {}) or {}
+    world_config_dir = world_config_path.parent
+    world_spawn_dir = resolve_path(world_config_dir, world_config.get("world_spawn_dir", "../world_spawn_json"))
+    vad_footprint_dir = resolve_path(world_config_dir, world_config.get("vad_footprint_dir", "../vad_footprint"))
 
     mac_config = read_json(mac_config_path, {}) or {}
     eeg = load_eeg_json(path)
@@ -230,6 +234,7 @@ def process_eeg_file(path: Path, config: dict[str, Any], config_dir: Path, remot
         mac_config_path.parent,
         eeg,
         instruction_output_dir,
+        [world_spawn_dir, vad_footprint_dir],
     )
     world_path, planet_path, _planets_path, vad_footprint_path = build_outputs(instruction, world_config_path)
     remote.trigger_spawn_planet()

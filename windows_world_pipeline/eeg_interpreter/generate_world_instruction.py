@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+WORLD_ID_PATTERN = re.compile(r"^world_(\d{4,})$")
+
 
 SYSTEM_RULES = """
 You interpret EEG-derived emotional features into a single symbolic asset generation brief.
@@ -85,14 +87,42 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         f.write("\n")
 
 
-def next_world_number(counter_path: Path) -> int:
+def max_world_number_in_dirs(paths: list[Path] | None) -> int:
+    if not paths:
+        return 0
+
+    max_number = 0
+    for path in paths:
+        if not path.exists() or not path.is_dir():
+            continue
+        for json_path in path.glob("world_*.json"):
+            match = WORLD_ID_PATTERN.match(json_path.stem)
+            if not match:
+                continue
+            max_number = max(max_number, int(match.group(1)))
+        for json_path in path.glob("*.json"):
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            world_id = str(data.get("world_id", ""))
+            if not WORLD_ID_PATTERN.match(world_id):
+                continue
+            try:
+                max_number = max(max_number, int(data.get("world_number", 0)))
+            except (TypeError, ValueError):
+                continue
+    return max_number
+
+
+def next_world_number(counter_path: Path, existing_dirs: list[Path] | None = None) -> int:
     counter_path.parent.mkdir(parents=True, exist_ok=True)
     if counter_path.exists():
         raw = counter_path.read_text(encoding="utf-8").strip()
         current = int(raw or "0")
     else:
         current = 0
-    value = current + 1
+    value = max(current, max_world_number_in_dirs(existing_dirs)) + 1
     counter_path.write_text(str(value), encoding="utf-8")
     return value
 
@@ -396,6 +426,7 @@ def generate_instruction_from_eeg(
     config_dir: Path,
     eeg: dict[str, Any],
     out_dir_override: str | None = None,
+    existing_world_dirs: list[Path] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     eeg = normalize_eeg_payload(eeg)
     output_dir = out_dir_override or config.get("instruction_output_dir") or config.get("shared_output_dir")
@@ -403,7 +434,10 @@ def generate_instruction_from_eeg(
         raise KeyError("instruction_output_dir")
     out_dir = resolve_config_path(config_dir, output_dir)
     counter_path = resolve_config_path(config_dir, config.get("world_counter_path", "world_counter.txt"))
-    world_number = next_world_number(counter_path)
+    existing_dirs = [out_dir]
+    if existing_world_dirs:
+        existing_dirs.extend(existing_world_dirs)
+    world_number = next_world_number(counter_path, existing_dirs)
 
     if config.get("llm", {}).get("dry_run", True):
         interpreted = dry_run_interpretation(eeg)

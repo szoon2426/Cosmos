@@ -63,6 +63,12 @@ class WorldService:
             "vad_footprint_path": self.vad_footprint_dir / f"{world_id}.json",
         }
 
+    def next_world_number(self) -> int:
+        return next_world_number(
+            self.world_counter_path,
+            [self.instruction_output_dir, self.world_spawn_dir, self.vad_footprint_dir],
+        )
+
     def world_exists(self, world_id: str) -> bool:
         if any(path.exists() for path in self.output_paths_for(world_id).values()):
             return True
@@ -75,17 +81,14 @@ class WorldService:
         if payload.result is None:
             raise ValueError("Succeeded payloads must include result")
 
-    def generate(self, world_id: str, payload: EEGEmotionsPayload) -> GenerateWorldResponse:
+    def generate(self, payload: EEGEmotionsPayload) -> GenerateWorldResponse:
         self.validate_payload(payload)
-        if self.world_exists(world_id):
-            raise DuplicateWorldError(f"World '{world_id}' already exists")
 
         eeg = normalize_eeg_payload(payload_to_eeg_dict(payload))
         interpreted = self._interpret(eeg)
-        world_number = next_world_number(self.world_counter_path)
+        world_number = self.next_world_number()
         instruction = normalize_instruction(interpreted, world_number, eeg)
-        instruction["world_id"] = world_id
-        instruction["world_number"] = world_number
+        world_id = str(instruction["world_id"])
 
         paths = self.output_paths_for(world_id)
         if self.world_exists(world_id):
