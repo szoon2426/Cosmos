@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 WORLD_ID_PATTERN = re.compile(r"^world_(\d{4,})$")
+WORLD_SLOT_LIMIT = 30
 
 
 SYSTEM_RULES = """
@@ -122,7 +123,8 @@ def next_world_number(counter_path: Path, existing_dirs: list[Path] | None = Non
         current = int(raw or "0")
     else:
         current = 0
-    value = max(current, max_world_number_in_dirs(existing_dirs)) + 1
+    highest_seen = max(current, max_world_number_in_dirs(existing_dirs))
+    value = 1 if highest_seen >= WORLD_SLOT_LIMIT else highest_seen + 1
     counter_path.write_text(str(value), encoding="utf-8")
     return value
 

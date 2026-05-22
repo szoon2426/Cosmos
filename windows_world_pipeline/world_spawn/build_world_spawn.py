@@ -77,17 +77,6 @@ def ensure_vad_footprint(path: Path, world: dict[str, Any]) -> None:
     base_vad = vad_to_dict(world.get("base_vad", {}))
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if path.exists():
-        existing = load_json(path, {}) or {}
-        if not isinstance(existing, dict):
-            existing = {}
-        existing.setdefault("world_id", world_id)
-        existing.setdefault("base_vad", base_vad)
-        existing.setdefault("current_vad", existing.get("base_vad", base_vad))
-        existing.setdefault("vad_footprints", [])
-        write_json(path, existing)
-        return
-
     write_json(
         path,
         {
@@ -381,7 +370,13 @@ def upsert_by_key(items: list[dict[str, Any]], key: str, value: str, new_item: d
 
 
 def update_person_world_map(path: Path, person_name: str, world_id: str) -> None:
-    mapping = load_json(path, {}) or {}
+    try:
+        mapping = load_json(path, {}) or {}
+    except json.JSONDecodeError:
+        mapping = {}
+    if not isinstance(mapping, dict):
+        mapping = {}
+    mapping = {str(name): value for name, value in mapping.items() if value != world_id}
     mapping[str(person_name)] = world_id
     write_json(path, mapping)
 

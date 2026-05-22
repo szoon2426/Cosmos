@@ -7,6 +7,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from windows_world_pipeline.api.main import app
+from windows_world_pipeline.eeg_interpreter.generate_world_instruction import next_world_number
 
 
 def sample_payload() -> dict[str, Any]:
@@ -156,6 +157,86 @@ def test_generate_world_increments_world_number(monkeypatch, tmp_path):
     second_instruction = json.loads(Path(second.json()["instruction_path"]).read_text(encoding="utf-8"))
     assert first_instruction["world_number"] == 1
     assert second_instruction["world_number"] == 2
+
+
+def test_next_world_number_wraps_after_slot_limit(tmp_path):
+    counter_path = tmp_path / "world_counter.txt"
+    worlds_dir = tmp_path / "worlds"
+
+    counter_path.write_text("30", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 1
+    assert counter_path.read_text(encoding="utf-8") == "1"
+
+    counter_path.write_text("35", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 1
+    assert counter_path.read_text(encoding="utf-8") == "1"
+
+    counter_path.write_text("29", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 30
+    assert counter_path.read_text(encoding="utf-8") == "30"
+
+
+def test_next_world_number_wraps_when_existing_worlds_exceed_limit(tmp_path):
+    counter_path = tmp_path / "world_counter.txt"
+    worlds_dir = tmp_path / "worlds"
+    write_json(worlds_dir / "world_0035.json", {"world_id": "world_0035", "world_number": 35})
+
+    counter_path.write_text("0", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 1
+    assert counter_path.read_text(encoding="utf-8") == "1"
+
+
+def test_generate_world_overwrites_reused_slot(monkeypatch, tmp_path):
+    config_path = write_test_config(tmp_path)
+    monkeypatch.setenv("PIPELINE_CONFIG", str(config_path))
+
+    (tmp_path / "world_counter.txt").write_text("30", encoding="utf-8")
+    write_json(tmp_path / "world_instructions" / "world_0001.json", {"world_id": "old"})
+    write_json(tmp_path / "world_spawn_json" / "world_0001.json", {"world_id": "old"})
+    write_json(
+        tmp_path / "vad_footprint" / "world_0001.json",
+        {
+            "world_id": "world_0001",
+            "base_vad": {"valence": -1.0, "arousal": -1.0, "dominance": -1.0},
+            "current_vad": {"valence": 1.0, "arousal": 1.0, "dominance": 1.0},
+            "vad_footprints": [{"reason": "old interaction"}],
+        },
+    )
+    write_json(
+        tmp_path / "planet_spawn" / "planets_layout.json",
+        {
+            "planets": [
+                {"planet_id": "world_0001", "location": {"x": 0, "y": 0, "z": 0}},
+                {"planet_id": "world_0002", "location": {"x": 1, "y": 1, "z": 1}},
+            ]
+        },
+    )
+    write_json(
+        tmp_path / "person_world_map.json",
+        {"Old Person": "world_0001", "Other Person": "world_0002"},
+    )
+
+    payload = sample_payload()
+    payload["metadata"]["subject_name"] = "New Person"
+    with TestClient(app) as client:
+        response = client.post("/generate", json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["world_id"] == "world_0001"
+
+    instruction = json.loads((tmp_path / "world_instructions" / "world_0001.json").read_text(encoding="utf-8"))
+    world_spawn = json.loads((tmp_path / "world_spawn_json" / "world_0001.json").read_text(encoding="utf-8"))
+    vad_footprint = json.loads((tmp_path / "vad_footprint" / "world_0001.json").read_text(encoding="utf-8"))
+    planets = json.loads((tmp_path / "planet_spawn" / "planets_layout.json").read_text(encoding="utf-8"))
+    person_map = json.loads((tmp_path / "person_world_map.json").read_text(encoding="utf-8"))
+
+    assert instruction["person_name"] == "New Person"
+    assert world_spawn["person_name"] == "New Person"
+    assert vad_footprint["base_vad"] == world_spawn["base_vad"]
+    assert vad_footprint["current_vad"] == world_spawn["base_vad"]
+    assert vad_footprint["vad_footprints"] == []
+    assert [planet["planet_id"] for planet in planets["planets"]].count("world_0001") == 1
+    assert person_map == {"Other Person": "world_0002", "New Person": "world_0001"}
 
 
 def test_generate_world_rejects_failed_payload(monkeypatch, tmp_path):

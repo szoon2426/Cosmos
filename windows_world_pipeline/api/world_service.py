@@ -91,9 +91,6 @@ class WorldService:
         world_id = str(instruction["world_id"])
 
         paths = self.output_paths_for(world_id)
-        if self.world_exists(world_id):
-            raise DuplicateWorldError(f"World '{world_id}' already exists")
-
         write_new_json(paths["instruction_path"], instruction)
         world_path, planet_path, planets_path, vad_footprint_path = build_outputs(instruction, self.world_config_path)
         self.remote.trigger_spawn_planet()
@@ -128,9 +125,6 @@ def payload_to_eeg_dict(payload: EEGEmotionsPayload) -> dict[str, Any]:
 
 def write_new_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("x", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-    except FileExistsError as exc:
-        raise DuplicateWorldError(f"World '{path.stem}' already exists") from exc
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
