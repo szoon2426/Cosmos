@@ -20,6 +20,7 @@ from src.realtime_inference_final import (
     BaseMemoryState,
     GRAB_RECOVERY_SECONDS,
     InteractionSession,
+    LEFT_SOLO_GRAB_HOLD_SECONDS,
     LEFT_SOLO_GRAB_SWIPE_DELTA_X,
     LEFT_SOLO_GRAB_SWIPE_VELOCITY_X,
     PointerRuntimeState,
@@ -241,7 +242,7 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertLess(recovered[1], world_vad[1])
         self.assertLess(recovered[2], world_vad[2])
 
-    def test_left_only_grab_under_five_seconds_does_not_lock_vad(self) -> None:
+    def test_left_only_grab_before_hold_does_not_lock_vad(self) -> None:
         session = InteractionSession()
         world_vad = (0.8, 0.1, -0.2)
         base_vad = (-0.3, 0.4, 0.5)
@@ -264,13 +265,13 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=104.9,
+            now=99.9 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
         self.assertEqual(vad, world_vad)
         self.assertFalse(switch)
 
-    def test_left_only_grab_at_five_seconds_locks_vad_to_world_base(self) -> None:
+    def test_left_only_grab_after_hold_locks_vad_to_world_base(self) -> None:
         session = InteractionSession()
         world_vad = (0.8, 0.1, -0.2)
         base_vad = (-0.3, 0.4, 0.5)
@@ -292,7 +293,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.0,
+            now=100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
         self.assertEqual(vad, base_vad)
@@ -360,7 +361,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.0,
+            now=100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
         vad, switch = update_left_solo_galaxy_gesture(
             session,
@@ -369,7 +370,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.1,
+            now=100.1 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
         self.assertEqual(vad, base_vad)
@@ -397,7 +398,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=104.8,
+            now=99.8 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
         vad, switch = update_left_solo_galaxy_gesture(
             session,
@@ -406,7 +407,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=104.9,
+            now=99.9 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
         self.assertEqual(vad, world_vad)
@@ -434,7 +435,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.0,
+            now=100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
         vad, switch = update_left_solo_galaxy_gesture(
             session,
@@ -443,7 +444,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.1,
+            now=100.1 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
         self.assertEqual(vad, base_vad)
@@ -532,17 +533,17 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=102.5,
+            now=100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0,
         )
 
-        state = self._left_solo_hud_state(session, 102.5)
+        state = self._left_solo_hud_state(session, 100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0)
 
         self.assertTrue(state.left_solo_grab_active)
-        self.assertAlmostEqual(state.left_solo_grab_elapsed, 2.5)
+        self.assertAlmostEqual(state.left_solo_grab_elapsed, LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0)
         self.assertAlmostEqual(state.left_solo_grab_hold_progress, 0.5)
         self.assertFalse(state.left_solo_vad_restore_active)
         self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.1)
-        self.assertAlmostEqual(state.left_solo_swipe_velocity_x, 0.04)
+        self.assertAlmostEqual(state.left_solo_swipe_velocity_x, 0.1 / (LEFT_SOLO_GRAB_HOLD_SECONDS / 2.0))
         self.assertAlmostEqual(state.left_solo_swipe_progress, 0.1 / LEFT_SOLO_GRAB_SWIPE_DELTA_X)
         self.assertFalse(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
@@ -570,10 +571,10 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.0,
+            now=100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
-        state = self._left_solo_hud_state(session, 105.0)
+        state = self._left_solo_hud_state(session, 100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS)
 
         self.assertTrue(state.left_solo_grab_active)
         self.assertAlmostEqual(state.left_solo_grab_hold_progress, 1.0)
@@ -605,7 +606,7 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.0,
+            now=100.0 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
         update_left_solo_galaxy_gesture(
             session,
@@ -614,10 +615,10 @@ class LowlightTrackingTests(unittest.TestCase):
             right_features=right,
             world_vad=world_vad,
             world_base_vad=base_vad,
-            now=105.1,
+            now=100.1 + LEFT_SOLO_GRAB_HOLD_SECONDS,
         )
 
-        state = self._left_solo_hud_state(session, 105.1)
+        state = self._left_solo_hud_state(session, 100.1 + LEFT_SOLO_GRAB_HOLD_SECONDS)
 
         self.assertTrue(state.left_solo_vad_restore_active)
         self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.14)
