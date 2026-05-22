@@ -410,6 +410,90 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertEqual(vad, world_vad)
         self.assertFalse(switch)
 
+    def test_arm_fallback_swipe_after_left_only_hold_triggers_galaxy(self) -> None:
+        session = InteractionSession()
+        world_vad = (0.8, 0.1, -0.2)
+        base_vad = (-0.3, 0.4, 0.5)
+        right = FinalHandFeatures(hand_visible=False, grab_active=False)
+
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.4),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=100.0,
+        )
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(visible=True, pose_fallback=True, x=0.41),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.0,
+        )
+        vad, switch = update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(visible=True, pose_fallback=True, x=0.64),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.1,
+        )
+
+        self.assertEqual(vad, base_vad)
+        self.assertTrue(switch)
+
+    def test_arm_fallback_cannot_start_left_only_galaxy_gesture(self) -> None:
+        session = InteractionSession()
+        world_vad = (0.8, 0.1, -0.2)
+        base_vad = (-0.3, 0.4, 0.5)
+
+        vad, switch = update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(visible=True, pose_fallback=True, x=0.64),
+            right_features=FinalHandFeatures(hand_visible=False, grab_active=False),
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.1,
+        )
+
+        self.assertIsNone(session.left_solo_grab_started_at)
+        self.assertEqual(vad, world_vad)
+        self.assertFalse(switch)
+
+    def test_right_grab_cancels_arm_fallback_galaxy_swipe(self) -> None:
+        session = InteractionSession()
+        world_vad = (0.8, 0.1, -0.2)
+        base_vad = (-0.3, 0.4, 0.5)
+
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.4),
+            right_features=FinalHandFeatures(hand_visible=False, grab_active=False),
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=100.0,
+        )
+        vad, switch = update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(visible=True, pose_fallback=True, x=0.64),
+            right_features=FinalHandFeatures(hand_visible=True, grab_active=True),
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.1,
+        )
+
+        self.assertIsNone(session.left_solo_grab_started_at)
+        self.assertEqual(vad, world_vad)
+        self.assertFalse(switch)
+
     def test_left_solo_hud_debug_inactive_defaults_to_zero(self) -> None:
         state = self._left_solo_hud_state(InteractionSession(), 100.0)
 

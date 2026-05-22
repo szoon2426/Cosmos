@@ -532,11 +532,20 @@ def update_left_solo_galaxy_gesture(
     world_base_vad: tuple[float, float, float],
     now: float,
 ) -> tuple[tuple[float, float, float], bool]:
+    def left_grab_or_arm_fallback() -> bool:
+        real_left_grab = left_features.hand_visible and left_features.grab_active
+        arm_fallback_continuation = (
+            session.left_solo_grab_started_at is not None
+            and left_features.visible
+            and left_features.pose_fallback
+        )
+        return real_left_grab or arm_fallback_continuation
+
+    right_actual_grab = right_features.hand_visible and right_features.grab_active
     left_only_grab = (
         pointer_world_active
-        and left_features.hand_visible
-        and left_features.grab_active
-        and not (right_features.hand_visible and right_features.grab_active)
+        and left_grab_or_arm_fallback()
+        and not right_actual_grab
     )
     if not left_only_grab:
         reset_left_solo_galaxy_gesture(session)
