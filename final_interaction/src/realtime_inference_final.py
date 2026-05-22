@@ -49,6 +49,7 @@ POINTER_JOYSTICK_RADIUS = 40.0
 POINTER_HAND_DELTA_RANGE = 0.18
 POINTER_JOYSTICK_ACTIVE_ALPHA = 0.035
 POINTER_JOYSTICK_RETURN_ALPHA = 0.28
+GRAB_RECOVERY_SECONDS = 5.0
 VAD_DEADZONE_XY = 0.045
 VAD_DEADZONE_Z = 0.018
 VAD_RESPONSE_ALPHA = 0.35
@@ -184,6 +185,7 @@ class InteractionSession:
     grab_locked: bool = False
     lost_started_at: float | None = None
     released_at: float | None = None
+    grab_recover_until: float | None = None
     thrust_ready: bool = False
     thrust_fired_at: float | None = None
     retreat_started_at: float | None = None
@@ -503,7 +505,10 @@ def end_interaction(
     footprint_store: VADFootprintStore,
     world_vad: tuple[float, float, float],
     now: float,
+    *,
+    allow_grab_recovery: bool = False,
 ) -> None:
+    should_open_recovery = allow_grab_recovery and session.active and session.mode == "open"
     session.active = False
     session.mode = "idle"
     session.engaged_at = None
@@ -512,7 +517,39 @@ def end_interaction(
     session.thrust_ready = False
     session.retreat_started_at = None
     session.released_at = now
+    session.grab_recover_until = now + GRAB_RECOVERY_SECONDS if should_open_recovery else None
     footprint_store.remember_pending(world_vad)
+
+
+def activate_grab_session(
+    session: InteractionSession,
+    *,
+    pointer_xy: tuple[float, float],
+    avg_z: float,
+    span_x: float,
+    span_y: float,
+    world_vad: tuple[float, float, float],
+    now: float,
+) -> None:
+    session.active = True
+    session.mode = "grab"
+    session.engaged_at = None
+    session.grab_locked = True
+    session.grab_anchor_x = pointer_xy[0]
+    session.grab_anchor_y = pointer_xy[1]
+    session.grab_anchor_z = avg_z
+    session.grab_span_x = span_x
+    session.grab_span_y = span_y
+    session.grab_anchor_v, session.grab_anchor_a, session.grab_anchor_d = world_vad
+    session.released_at = None
+    session.grab_recover_until = None
+    session.retreat_started_at = None
+    session.lost_started_at = None
+    session.thrust_ready = False
+
+
+def can_recover_grab(session: InteractionSession, now: float) -> bool:
+    return session.grab_recover_until is not None and now <= session.grab_recover_until
 
 
 def open_video_capture(camera_index: int, backend_name: str):
@@ -947,13 +984,27 @@ def main() -> None:
                     end_interaction(session, footprint_store, world_vad, now)
                 session.engaged_at = None
                 session.grab_locked = False
+                session.grab_recover_until = None
                 session.left_pointer_locked = False
                 session.right_pointer_locked = False
                 session.thrust_ready = False
                 session.retreat_started_at = None
                 session.lost_started_at = None
             elif not session.active:
-                if interaction_both_open:
+                if can_recover_grab(session, now) and interaction_both_grab:
+                    activate_grab_session(
+                        session,
+                        pointer_xy=pointer_xy,
+                        avg_z=avg_z,
+                        span_x=span_x,
+                        span_y=span_y,
+                        world_vad=world_vad,
+                        now=now,
+                    )
+                elif session.grab_recover_until is not None and now > session.grab_recover_until:
+                    session.grab_recover_until = None
+                    session.engaged_at = None
+                elif interaction_both_open:
                     if session.engaged_at is None:
                         session.engaged_at = now
                     elif now - session.engaged_at >= 0.08:
@@ -966,6 +1017,7 @@ def main() -> None:
                         session.open_span_y = span_y
                         session.anchor_v, session.anchor_a, session.anchor_d = world_vad
                         session.released_at = None
+                        session.grab_recover_until = None
                         session.retreat_started_at = None
                 else:
                     session.engaged_at = None
@@ -1030,7 +1082,7 @@ def main() -> None:
                     if session.lost_started_at is None:
                         session.lost_started_at = now
                     elif now - session.lost_started_at >= lost_timeout:
-                        end_interaction(session, footprint_store, world_vad, now)
+                        end_interaction(session, footprint_store, world_vad, now, allow_grab_recovery=True)
 
             if not session.active and session.released_at is not None:
                 if footprint_store.pending_vad is not None:

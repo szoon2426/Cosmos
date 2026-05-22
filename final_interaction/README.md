@@ -179,3 +179,10 @@ Diagnostics:
   ROI rescue count, fallback age, handedness score, palm radius, and camera props.
 - `--tracking-log tracking_lowlight.jsonl` writes 10Hz JSONL diagnostics.
 - Use `.csv` as the log suffix to write CSV instead.
+
+Interaction recovery:
+
+- If an active `open` interaction drops to `idle` because hand tracking is lost,
+  the runtime keeps a 5 second grab recovery window.
+- During that window, if both hands are recognized as grab, the session resumes
+  directly in `grab` without requiring another open pose first.

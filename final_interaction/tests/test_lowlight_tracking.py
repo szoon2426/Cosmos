@@ -12,6 +12,13 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from src.camera_preprocess import FramePreprocessor, PreprocessConfig
 from src.final_hand_features import FinalHandFeatures, actual_both_open
 from src.hand_roi_rescue import CropRect, map_crop_landmarks_to_frame
+from src.realtime_inference_final import (
+    GRAB_RECOVERY_SECONDS,
+    InteractionSession,
+    activate_grab_session,
+    can_recover_grab,
+    end_interaction,
+)
 
 
 class LowlightTrackingTests(unittest.TestCase):
@@ -66,6 +73,46 @@ class LowlightTrackingTests(unittest.TestCase):
         )
 
         self.assertFalse(actual_both_open(real_right, fallback_left))
+
+    def test_lost_open_session_opens_grab_recovery_window(self) -> None:
+        remembered = []
+        store = SimpleNamespace(remember_pending=lambda vad: remembered.append(vad))
+        session = InteractionSession(active=True, mode="open")
+
+        end_interaction(
+            session,
+            store,
+            (0.1, 0.2, 0.3),
+            100.0,
+            allow_grab_recovery=True,
+        )
+
+        self.assertFalse(session.active)
+        self.assertEqual(session.mode, "idle")
+        self.assertAlmostEqual(session.grab_recover_until, 100.0 + GRAB_RECOVERY_SECONDS)
+        self.assertTrue(can_recover_grab(session, 104.9))
+        self.assertFalse(can_recover_grab(session, 105.1))
+        self.assertEqual(remembered, [(0.1, 0.2, 0.3)])
+
+    def test_activate_grab_session_enters_grab_without_open_anchor(self) -> None:
+        session = InteractionSession(active=False, mode="idle", grab_recover_until=105.0)
+
+        activate_grab_session(
+            session,
+            pointer_xy=(0.4, 0.6),
+            avg_z=0.2,
+            span_x=0.12,
+            span_y=0.08,
+            world_vad=(0.1, -0.2, 0.3),
+            now=101.0,
+        )
+
+        self.assertTrue(session.active)
+        self.assertEqual(session.mode, "grab")
+        self.assertTrue(session.grab_locked)
+        self.assertIsNone(session.grab_recover_until)
+        self.assertEqual((session.grab_anchor_x, session.grab_anchor_y, session.grab_anchor_z), (0.4, 0.6, 0.2))
+        self.assertEqual((session.grab_anchor_v, session.grab_anchor_a, session.grab_anchor_d), (0.1, -0.2, 0.3))
 
 
 if __name__ == "__main__":
