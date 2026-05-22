@@ -120,6 +120,14 @@ def test_generate_world_creates_outputs(monkeypatch, tmp_path):
     assert instruction["world_id"] == "world_0001"
     assert instruction["person_name"] == "백인호"
     assert instruction["world_number"] == 1
+    assert instruction["source_eeg"]["vad"] == {"valence": 0.6, "arousal": 0.3, "dominance": 0.4}
+
+    expected_unreal_vad = {"valence": 0.2, "arousal": -0.4, "dominance": -0.2}
+    world_spawn = json.loads(Path(body["world_spawn_path"]).read_text(encoding="utf-8"))
+    vad_footprint = json.loads(Path(body["vad_footprint_path"]).read_text(encoding="utf-8"))
+    assert world_spawn["base_vad"] == expected_unreal_vad
+    assert vad_footprint["base_vad"] == expected_unreal_vad
+    assert vad_footprint["current_vad"] == expected_unreal_vad
 
 
 def test_generate_world_rejects_duplicate_id(monkeypatch, tmp_path):

@@ -56,6 +56,22 @@ def vad_to_dict(vad: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def vad01_to_unreal(vad: dict[str, Any]) -> dict[str, float]:
+    def convert(key: str) -> float:
+        try:
+            value = float(vad.get(key, 0.5))
+        except (TypeError, ValueError):
+            value = 0.5
+        value = max(0.0, min(1.0, value))
+        return round(value * 2.0 - 1.0, 4)
+
+    return {
+        "valence": convert("valence"),
+        "arousal": convert("arousal"),
+        "dominance": convert("dominance"),
+    }
+
+
 def ensure_vad_footprint(path: Path, world: dict[str, Any]) -> None:
     world_id = str(world["world_id"])
     base_vad = vad_to_dict(world.get("base_vad", {}))
@@ -282,11 +298,7 @@ def build_world_spawn(instruction: dict[str, Any], world_space: int) -> dict[str
         "seed": seed,
         "world_space": world_space,
         "world_offset": world_number * world_space,
-        "base_vad": {
-            "valence": vad.get("valence"),
-            "arousal": vad.get("arousal"),
-            "dominance": vad.get("dominance"),
-        },
+        "base_vad": vad01_to_unreal(vad),
         "flower_density": 0.74 if any(keyword in atmosphere for keyword in ("dreamlike", "misty", "soft")) else 0.62,
         "flower_color_group": infer_flower_group(instruction, atmosphere),
         "flower_type": pick_flowers(rng, instruction, atmosphere),
