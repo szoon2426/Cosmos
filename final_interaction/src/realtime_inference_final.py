@@ -211,6 +211,8 @@ class InteractionSession:
     left_solo_grab_anchor_x: float = 0.5
     left_solo_grab_last_x: float = 0.5
     left_solo_grab_last_at: float | None = None
+    left_solo_grab_delta_x: float = 0.0
+    left_solo_grab_velocity_x: float = 0.0
     left_solo_grab_fired: bool = False
 
 
@@ -515,6 +517,8 @@ def reset_left_solo_galaxy_gesture(session: InteractionSession) -> None:
     session.left_solo_grab_anchor_x = 0.5
     session.left_solo_grab_last_x = 0.5
     session.left_solo_grab_last_at = None
+    session.left_solo_grab_delta_x = 0.0
+    session.left_solo_grab_velocity_x = 0.0
     session.left_solo_grab_fired = False
 
 
@@ -543,6 +547,8 @@ def update_left_solo_galaxy_gesture(
         session.left_solo_grab_anchor_x = left_features.x
         session.left_solo_grab_last_x = left_features.x
         session.left_solo_grab_last_at = now
+        session.left_solo_grab_delta_x = 0.0
+        session.left_solo_grab_velocity_x = 0.0
         session.left_solo_grab_fired = False
         return world_vad, False
 
@@ -550,6 +556,8 @@ def update_left_solo_galaxy_gesture(
     previous_at = session.left_solo_grab_last_at if session.left_solo_grab_last_at is not None else now
     x_velocity = (left_features.x - previous_x) / max(now - previous_at, 1e-3)
     delta_from_anchor = left_features.x - session.left_solo_grab_anchor_x
+    session.left_solo_grab_delta_x = delta_from_anchor
+    session.left_solo_grab_velocity_x = x_velocity
     held = now - session.left_solo_grab_started_at >= LEFT_SOLO_GRAB_HOLD_SECONDS
 
     switch_to_camera = (
@@ -567,6 +575,25 @@ def update_left_solo_galaxy_gesture(
     if held:
         return world_base_vad, switch_to_camera
     return world_vad, False
+
+
+def left_solo_galaxy_debug_state(session: InteractionSession, now: float) -> dict[str, float | bool]:
+    active = session.left_solo_grab_started_at is not None
+    elapsed = 0.0
+    if session.left_solo_grab_started_at is not None:
+        elapsed = max(0.0, now - session.left_solo_grab_started_at)
+    hold_progress = clamp(elapsed / LEFT_SOLO_GRAB_HOLD_SECONDS, 0.0, 1.0)
+    restore_active = active and hold_progress >= 1.0
+    return {
+        "left_solo_grab_active": active,
+        "left_solo_grab_elapsed": elapsed,
+        "left_solo_grab_hold_progress": hold_progress,
+        "left_solo_vad_restore_active": restore_active,
+        "left_solo_swipe_delta_x": session.left_solo_grab_delta_x if active else 0.0,
+        "left_solo_swipe_velocity_x": session.left_solo_grab_velocity_x if active else 0.0,
+        "left_solo_world_move_ready": restore_active and not session.left_solo_grab_fired,
+        "left_solo_world_move_fired": session.left_solo_grab_fired,
+    }
 
 
 def reset_interaction_session(session: InteractionSession) -> None:
@@ -1196,6 +1223,7 @@ def main() -> None:
                     pd.set_space_mode()
                     pd_mode = "space"
 
+            left_solo_debug = left_solo_galaxy_debug_state(session, now)
             session.last_z = avg_z
 
             pointer_x = pointer_xy[0] if session.active and both_visible else -1.0
@@ -1283,6 +1311,7 @@ def main() -> None:
                 hand_count=hand_count(hand_results),
                 roi_rescue_count=rescue_stats.added if rescue_stats is not None else 0,
                 camera_props=camera_props,
+                **left_solo_debug,
             )
             tracking_log.write(hud_state)
 

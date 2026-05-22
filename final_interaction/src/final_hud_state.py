@@ -60,6 +60,14 @@ class HudFrameState:
     hand_count: int
     roi_rescue_count: int
     camera_props: str
+    left_solo_grab_active: bool
+    left_solo_grab_elapsed: float
+    left_solo_grab_hold_progress: float
+    left_solo_vad_restore_active: bool
+    left_solo_swipe_delta_x: float
+    left_solo_swipe_velocity_x: float
+    left_solo_world_move_ready: bool
+    left_solo_world_move_fired: bool
 
 
 def hud_hand_state(features: FinalHandFeatures) -> HudHandState:
@@ -101,6 +109,14 @@ def hud_frame_state(
     hand_count: int = 0,
     roi_rescue_count: int = 0,
     camera_props: str = "",
+    left_solo_grab_active: bool = False,
+    left_solo_grab_elapsed: float = 0.0,
+    left_solo_grab_hold_progress: float = 0.0,
+    left_solo_vad_restore_active: bool = False,
+    left_solo_swipe_delta_x: float = 0.0,
+    left_solo_swipe_velocity_x: float = 0.0,
+    left_solo_world_move_ready: bool = False,
+    left_solo_world_move_fired: bool = False,
 ) -> HudFrameState:
     return HudFrameState(
         timestamp=timestamp,
@@ -135,4 +151,12 @@ def hud_frame_state(
         hand_count=hand_count,
         roi_rescue_count=roi_rescue_count,
         camera_props=camera_props,
+        left_solo_grab_active=left_solo_grab_active,
+        left_solo_grab_elapsed=left_solo_grab_elapsed,
+        left_solo_grab_hold_progress=left_solo_grab_hold_progress,
+        left_solo_vad_restore_active=left_solo_vad_restore_active,
+        left_solo_swipe_delta_x=left_solo_swipe_delta_x,
+        left_solo_swipe_velocity_x=left_solo_swipe_velocity_x,
+        left_solo_world_move_ready=left_solo_world_move_ready,
+        left_solo_world_move_fired=left_solo_world_move_fired,
     )

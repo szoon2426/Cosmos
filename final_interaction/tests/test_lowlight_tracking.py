@@ -13,6 +13,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from src.camera_preprocess import FramePreprocessor, PreprocessConfig
 from src.final_hand_features import FinalHandFeatures, actual_both_open
+from src.final_hud_state import hud_frame_state
+from src.final_mapper import compute_final_payload
 from src.hand_roi_rescue import CropRect, map_crop_landmarks_to_frame
 from src.realtime_inference_final import (
     BaseMemoryState,
@@ -24,6 +26,7 @@ from src.realtime_inference_final import (
     activate_grab_session,
     can_recover_grab,
     end_interaction,
+    left_solo_galaxy_debug_state,
     recover_world_vad_after_release,
     reset_interaction_session,
     update_left_solo_galaxy_gesture,
@@ -31,6 +34,37 @@ from src.realtime_inference_final import (
 
 
 class LowlightTrackingTests(unittest.TestCase):
+    def _left_solo_hud_state(self, session: InteractionSession, now: float):
+        payload = compute_final_payload(
+            interaction_active=False,
+            pointer_x=-1.0,
+            pointer_y=-1.0,
+            target_v=0.0,
+            target_a=0.0,
+            target_d=0.0,
+            grab_active=False,
+            open_strength=0.0,
+            grab_strength=0.0,
+            switch_to_camera=False,
+        )
+        return hud_frame_state(
+            timestamp=now,
+            frame_index=0,
+            mode=session.mode,
+            world_active=True,
+            world_id="world_a",
+            world_number=1,
+            both_visible=False,
+            both_open=False,
+            both_grab=False,
+            left_features=FinalHandFeatures(),
+            right_features=FinalHandFeatures(),
+            left_pointer_active=False,
+            right_pointer_active=False,
+            payload=payload,
+            **left_solo_galaxy_debug_state(session, now),
+        )
+
     def test_auto_preprocess_enhances_dark_frame(self) -> None:
         frame = np.full((48, 64, 3), 24, dtype=np.uint8)
         preprocessor = FramePreprocessor(PreprocessConfig(mode="auto"))
@@ -375,6 +409,129 @@ class LowlightTrackingTests(unittest.TestCase):
 
         self.assertEqual(vad, world_vad)
         self.assertFalse(switch)
+
+    def test_left_solo_hud_debug_inactive_defaults_to_zero(self) -> None:
+        state = self._left_solo_hud_state(InteractionSession(), 100.0)
+
+        self.assertFalse(state.left_solo_grab_active)
+        self.assertEqual(state.left_solo_grab_elapsed, 0.0)
+        self.assertEqual(state.left_solo_grab_hold_progress, 0.0)
+        self.assertFalse(state.left_solo_vad_restore_active)
+        self.assertEqual(state.left_solo_swipe_delta_x, 0.0)
+        self.assertEqual(state.left_solo_swipe_velocity_x, 0.0)
+        self.assertFalse(state.left_solo_world_move_ready)
+        self.assertFalse(state.left_solo_world_move_fired)
+
+    def test_left_solo_hud_debug_tracks_partial_hold(self) -> None:
+        session = InteractionSession()
+        world_vad = (0.8, 0.1, -0.2)
+        base_vad = (-0.3, 0.4, 0.5)
+        right = FinalHandFeatures(hand_visible=False, grab_active=False)
+
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.4),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=100.0,
+        )
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.5),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=102.5,
+        )
+
+        state = self._left_solo_hud_state(session, 102.5)
+
+        self.assertTrue(state.left_solo_grab_active)
+        self.assertAlmostEqual(state.left_solo_grab_elapsed, 2.5)
+        self.assertAlmostEqual(state.left_solo_grab_hold_progress, 0.5)
+        self.assertFalse(state.left_solo_vad_restore_active)
+        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.1)
+        self.assertAlmostEqual(state.left_solo_swipe_velocity_x, 0.04)
+        self.assertFalse(state.left_solo_world_move_ready)
+        self.assertFalse(state.left_solo_world_move_fired)
+
+    def test_left_solo_hud_debug_reports_vad_restore_after_hold(self) -> None:
+        session = InteractionSession()
+        world_vad = (0.8, 0.1, -0.2)
+        base_vad = (-0.3, 0.4, 0.5)
+        right = FinalHandFeatures(hand_visible=False, grab_active=False)
+
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.4),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=100.0,
+        )
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.41),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.0,
+        )
+
+        state = self._left_solo_hud_state(session, 105.0)
+
+        self.assertTrue(state.left_solo_grab_active)
+        self.assertAlmostEqual(state.left_solo_grab_hold_progress, 1.0)
+        self.assertTrue(state.left_solo_vad_restore_active)
+        self.assertTrue(state.left_solo_world_move_ready)
+        self.assertFalse(state.left_solo_world_move_fired)
+
+    def test_left_solo_hud_debug_reports_world_move_fired(self) -> None:
+        session = InteractionSession()
+        world_vad = (0.8, 0.1, -0.2)
+        base_vad = (-0.3, 0.4, 0.5)
+        right = FinalHandFeatures(hand_visible=False, grab_active=False)
+
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.4),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=100.0,
+        )
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.41),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.0,
+        )
+        update_left_solo_galaxy_gesture(
+            session,
+            pointer_world_active=True,
+            left_features=FinalHandFeatures(hand_visible=True, grab_active=True, x=0.64),
+            right_features=right,
+            world_vad=world_vad,
+            world_base_vad=base_vad,
+            now=105.1,
+        )
+
+        state = self._left_solo_hud_state(session, 105.1)
+
+        self.assertTrue(state.left_solo_vad_restore_active)
+        self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.24)
+        self.assertGreaterEqual(state.left_solo_swipe_velocity_x, 1.2)
+        self.assertFalse(state.left_solo_world_move_ready)
+        self.assertTrue(state.left_solo_world_move_fired)
 
     def test_world_change_loads_blended_vad_and_resets_interaction_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

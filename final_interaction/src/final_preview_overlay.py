@@ -186,8 +186,19 @@ def _draw_core_status(frame, state: HudFrameState, *, debug: bool) -> None:
             f"Rpalm={state.right.palm_radius:.2f}"
         )
         _draw_text(frame, quality, (20, 174), 0.38, (255, 230, 180))
+        gesture = (
+            f"L-grab galaxy active={state.left_solo_grab_active} "
+            f"hold={state.left_solo_grab_hold_progress * 100.0:.0f}% "
+            f"restore={state.left_solo_vad_restore_active} "
+            f"dx={state.left_solo_swipe_delta_x:+.2f} "
+            f"vx={state.left_solo_swipe_velocity_x:+.2f} "
+            f"ready={state.left_solo_world_move_ready} "
+            f"fired={state.left_solo_world_move_fired}"
+        )
+        color = (120, 255, 150) if state.left_solo_vad_restore_active else (210, 210, 255)
+        _draw_text(frame, gesture, (20, 198), 0.38, color)
         if state.camera_props:
-            _draw_text(frame, state.camera_props, (20, 198), 0.34, (200, 230, 255))
+            _draw_text(frame, state.camera_props, (20, 222), 0.34, (200, 230, 255))
 
 
 def draw_preview_overlay(
