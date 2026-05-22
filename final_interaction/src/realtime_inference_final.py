@@ -15,43 +15,25 @@ import cv2
 if __package__ in (None, ""):
     sys.path.append(str(Path(__file__).resolve().parent))
     from final_hand_features import FinalHandTracker
+    from final_hud_qt import FinalHudController
+    from final_hud_state import hud_frame_state
     from final_mapper import compute_final_payload
     from final_pd_bridge import FinalPDBridge
+    from final_preview_overlay import draw_preview_overlay
     from final_ue_bridge import FinalUEBridge
     from hand_extractor import HandExtractor
     from pose_extractor import PoseExtractor
 else:
     from .final_hand_features import FinalHandTracker
+    from .final_hud_qt import FinalHudController
+    from .final_hud_state import hud_frame_state
     from .final_mapper import compute_final_payload
     from .final_pd_bridge import FinalPDBridge
+    from .final_preview_overlay import draw_preview_overlay
     from .final_ue_bridge import FinalUEBridge
     from .hand_extractor import HandExtractor
     from .pose_extractor import PoseExtractor
 
-
-HAND_LANDMARK_LABELS = [
-    "WRIST",
-    "THUMB_CMC",
-    "THUMB_MCP",
-    "THUMB_IP",
-    "THUMB_TIP",
-    "INDEX_MCP",
-    "INDEX_PIP",
-    "INDEX_DIP",
-    "INDEX_TIP",
-    "MIDDLE_MCP",
-    "MIDDLE_PIP",
-    "MIDDLE_DIP",
-    "MIDDLE_TIP",
-    "RING_MCP",
-    "RING_PIP",
-    "RING_DIP",
-    "RING_TIP",
-    "PINKY_MCP",
-    "PINKY_PIP",
-    "PINKY_DIP",
-    "PINKY_TIP",
-]
 
 POINTER_BASE_Y = 43.0
 POINTER_WORLD_SPACE_Y = 1900.0
@@ -424,61 +406,6 @@ class WorldVADState:
             return None
 
 
-def draw_hand_overlay(frame, hand_results) -> None:
-    if not getattr(hand_results, "hand_landmarks", None):
-        return
-
-    h, w = frame.shape[:2]
-    for hand_idx, hand in enumerate(hand_results.hand_landmarks):
-        user_side = ""
-        if hand_idx < len(hand_results.handedness):
-            mp_side = hand_results.handedness[hand_idx][0].display_name.upper()
-            if mp_side in ("LEFT", "RIGHT"):
-                user_side = "RIGHT" if mp_side == "LEFT" else "LEFT"
-
-        for landmark_idx, landmark in enumerate(hand):
-            x = int(landmark.x * w)
-            y = int(landmark.y * h)
-            cv2.circle(frame, (x, y), 3, (120, 170, 255), -1, cv2.LINE_AA)
-            label = f"{landmark_idx}:{HAND_LANDMARK_LABELS[landmark_idx]}"
-            label_x = min(w - 170, x + 6)
-            label_y = max(14, y - 4)
-            cv2.putText(
-                frame,
-                label,
-                (label_x, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                frame,
-                label,
-                (label_x, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30,
-                (40, 40, 40),
-                1,
-                cv2.LINE_AA,
-            )
-
-        if user_side:
-            wrist = hand[0]
-            wx = int(wrist.x * w)
-            wy = int(wrist.y * h)
-            cv2.putText(
-                frame,
-                f"HAND={user_side}",
-                (min(w - 120, wx + 8), min(h - 10, wy + 18)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.42,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
 
 def midpoint(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
     return ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5)
@@ -605,6 +532,16 @@ def main() -> None:
         action="store_true",
         help="Draw detailed debug labels on the camera preview. Slower, so keep off for exhibition.",
     )
+    parser.add_argument("--preview-overlay", dest="preview_overlay", action="store_true", default=True)
+    parser.add_argument("--no-preview-overlay", dest="preview_overlay", action="store_false")
+    parser.add_argument("--hud", action="store_true", help="Show a transparent visual HUD window.")
+    parser.add_argument("--hud-monitor", type=int, default=0, help="Monitor index for the HUD window.")
+    parser.add_argument("--hud-opacity", type=float, default=1.0, help="Opacity scale for HUD visual elements.")
+    parser.add_argument("--hud-scale", type=float, default=1.0, help="Scale factor for HUD visual elements.")
+    parser.add_argument("--hud-click-through", dest="hud_click_through", action="store_true", default=True)
+    parser.add_argument("--no-hud-click-through", dest="hud_click_through", action="store_false")
+    parser.add_argument("--hud-topmost", dest="hud_topmost", action="store_true", default=True)
+    parser.add_argument("--no-hud-topmost", dest="hud_topmost", action="store_false")
     parser.add_argument(
         "--perf-log-sec",
         type=float,
@@ -642,13 +579,22 @@ def main() -> None:
     )
     session = InteractionSession()
     pointer_state = PointerRuntimeState()
+    hud = FinalHudController(
+        enabled=args.hud,
+        monitor_index=args.hud_monitor,
+        click_through=args.hud_click_through,
+        topmost=args.hud_topmost,
+        opacity=args.hud_opacity,
+        scale=args.hud_scale,
+    )
+    hud.start()
     world_vad = memory.current_base()
     pd_mode: str | None = None
     frame_index = 0
     last_pose_landmarks: dict[str, tuple[float, float]] | None = None
     perf_last_at = time.perf_counter()
     perf_frames = 0
-    perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0}
+    perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0, "hud": 0.0}
 
     if args.send_pd:
         pd.send_value("READY_MODE", 0.0)
@@ -709,13 +655,14 @@ def main() -> None:
             pointer_world_active = world_vad_state.is_world_active()
             both_visible = right_features.visible and left_features.visible
             both_open = (
-                pointer_world_active
-                and both_visible
+                both_visible
                 and right_features.open_strength >= 0.62
                 and left_features.open_strength >= 0.62
                 and (right_features.open_strength + left_features.open_strength) * 0.5 >= 0.72
             )
-            both_grab = pointer_world_active and both_visible and right_features.grab_active and left_features.grab_active
+            both_grab = both_visible and right_features.grab_active and left_features.grab_active
+            interaction_both_open = pointer_world_active and both_open
+            interaction_both_grab = pointer_world_active and both_grab
 
             if both_visible:
                 pointer_xy = midpoint(
@@ -726,7 +673,6 @@ def main() -> None:
                 avg_speed = 0.5 * (right_features.speed + left_features.speed)
                 avg_open = 0.5 * (right_features.open_strength + left_features.open_strength)
                 avg_grab = 0.5 * (right_features.grab_strength + left_features.grab_strength)
-                avg_radius = 0.5 * (right_features.palm_radius + left_features.palm_radius)
                 span_x = abs(right_features.x - left_features.x)
                 span_y = abs(right_features.y - left_features.y)
             else:
@@ -735,7 +681,6 @@ def main() -> None:
                 avg_speed = 0.0
                 avg_open = 0.0
                 avg_grab = 0.0
-                avg_radius = 0.0
                 span_x = 0.0
                 span_y = 0.0
 
@@ -758,7 +703,7 @@ def main() -> None:
                 session.retreat_started_at = None
                 session.lost_started_at = None
             elif not session.active:
-                if both_open:
+                if interaction_both_open:
                     if session.engaged_at is None:
                         session.engaged_at = now
                     elif now - session.engaged_at >= 0.08:
@@ -777,7 +722,7 @@ def main() -> None:
             else:
                 if both_visible:
                     session.lost_started_at = None
-                    if both_grab:
+                    if interaction_both_grab:
                         if not session.grab_locked:
                             session.grab_locked = True
                             session.mode = "grab"
@@ -804,7 +749,7 @@ def main() -> None:
                     else:
                         session.grab_locked = False
                         session.mode = "open"
-                        if both_open:
+                        if interaction_both_open:
                             # Open state holds the current world state without forcing it back yet.
                             pass
 
@@ -911,7 +856,7 @@ def main() -> None:
                 target_v=world_vad[0],
                 target_a=world_vad[1],
                 target_d=world_vad[2],
-                grab_active=both_grab,
+                grab_active=interaction_both_grab,
                 open_strength=avg_open,
                 grab_strength=avg_grab,
                 switch_to_camera=switch_to_camera,
@@ -921,6 +866,22 @@ def main() -> None:
                 l_z_location=left_pointer_z,
                 r_y_location=right_pointer_y,
                 r_z_location=right_pointer_z,
+            )
+            hud_state = hud_frame_state(
+                timestamp=now,
+                frame_index=frame_index,
+                mode=session.mode,
+                world_active=pointer_world_active,
+                world_id=world_vad_state.current_world_id,
+                world_number=world_vad_state.current_world_number,
+                both_visible=both_visible,
+                both_open=both_open,
+                both_grab=both_grab,
+                left_features=left_features,
+                right_features=right_features,
+                left_pointer_active=left_pointer_active,
+                right_pointer_active=right_pointer_active,
+                payload=payload,
             )
 
             if args.send:
@@ -937,46 +898,21 @@ def main() -> None:
                 pd.send_payload(payload)
 
             after_logic = time.perf_counter()
-            if args.debug_overlay:
-                draw_hand_overlay(frame, hand_results)
-                h, w = frame.shape[:2]
-                cx = int(clamp(pointer_x, 0.0, 1.0) * w)
-                cy = int(clamp(pointer_y, 0.0, 1.0) * h)
-                if session.active and both_visible:
-                    color = (70, 240, 160) if payload.grab_active > 0.5 else (255, 210, 120)
-                    radius = max(10, int(18 + avg_radius * 28))
-                    cv2.circle(frame, (cx, cy), radius, color, 2, cv2.LINE_AA)
-                    cv2.circle(frame, (cx, cy), max(4, radius // 5), color, -1, cv2.LINE_AA)
-
-                cv2.putText(
+            if args.preview_overlay or args.debug_overlay:
+                draw_preview_overlay(
                     frame,
-                    (
-                        f"mode={session.mode} active={session.active} "
-                        f"V={payload.target_v:.2f} A={payload.target_a:.2f} D={payload.target_d:.2f}"
-                    ),
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.62,
-                    (0, 245, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.putText(
-                    frame,
-                    (
-                        f"world={pointer_world_active} visible={both_visible} both_open={both_open} "
-                        f"RO={right_features.open_strength:.2f} LO={left_features.open_strength:.2f} z={avg_z:.2f}"
-                    ),
-                    (20, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.52,
-                    (220, 245, 220),
-                    2,
-                    cv2.LINE_AA,
+                    hand_results=hand_results,
+                    pose_landmarks=pose_landmarks,
+                    state=hud_state,
+                    debug=args.debug_overlay,
                 )
             after_draw = time.perf_counter()
 
             cv2.imshow("Cosmos Final 0505", frame)
+            hud_started = time.perf_counter()
+            hud.update(hud_state)
+            hud.process_events()
+            after_hud = time.perf_counter()
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")):
                 break
@@ -989,6 +925,7 @@ def main() -> None:
                 perf_acc["hand"] += after_hand - after_pose
                 perf_acc["logic"] += after_logic - after_hand
                 perf_acc["draw"] += after_draw - after_logic
+                perf_acc["hud"] += after_hud - hud_started
                 perf_now = time.perf_counter()
                 elapsed = perf_now - perf_last_at
                 if elapsed >= args.perf_log_sec:
@@ -1000,12 +937,14 @@ def main() -> None:
                         f"pose={perf_acc['pose'] / perf_frames * 1000:.1f}ms "
                         f"hand={perf_acc['hand'] / perf_frames * 1000:.1f}ms "
                         f"logic={perf_acc['logic'] / perf_frames * 1000:.1f}ms "
-                        f"draw={perf_acc['draw'] / perf_frames * 1000:.1f}ms"
+                        f"draw={perf_acc['draw'] / perf_frames * 1000:.1f}ms "
+                        f"hud={perf_acc['hud'] / perf_frames * 1000:.1f}ms"
                     )
                     perf_last_at = perf_now
                     perf_frames = 0
-                    perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0}
+                    perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0, "hud": 0.0}
     finally:
+        hud.close()
         cap.release()
         cv2.destroyAllWindows()
         hand_extractor.close()
