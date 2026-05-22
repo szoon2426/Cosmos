@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import sys
@@ -14,7 +15,8 @@ import cv2
 
 if __package__ in (None, ""):
     sys.path.append(str(Path(__file__).resolve().parent))
-    from final_hand_features import FinalHandTracker
+    from camera_preprocess import FramePreprocessor, PreprocessConfig
+    from final_hand_features import FinalHandTracker, actual_both_grab, actual_both_open
     from final_hud_qt import FinalHudController
     from final_hud_state import hud_frame_state
     from final_mapper import compute_final_payload
@@ -22,9 +24,11 @@ if __package__ in (None, ""):
     from final_preview_overlay import draw_preview_overlay
     from final_ue_bridge import FinalUEBridge
     from hand_extractor import HandExtractor
+    from hand_roi_rescue import RescueCandidate, RoiRescueConfig, hand_count, rescue_hand_results
     from pose_extractor import PoseExtractor
 else:
-    from .final_hand_features import FinalHandTracker
+    from .camera_preprocess import FramePreprocessor, PreprocessConfig
+    from .final_hand_features import FinalHandTracker, actual_both_grab, actual_both_open
     from .final_hud_qt import FinalHudController
     from .final_hud_state import hud_frame_state
     from .final_mapper import compute_final_payload
@@ -32,6 +36,7 @@ else:
     from .final_preview_overlay import draw_preview_overlay
     from .final_ue_bridge import FinalUEBridge
     from .hand_extractor import HandExtractor
+    from .hand_roi_rescue import RescueCandidate, RoiRescueConfig, hand_count, rescue_hand_results
     from .pose_extractor import PoseExtractor
 
 
@@ -50,6 +55,30 @@ VAD_RESPONSE_ALPHA = 0.35
 VAD_GAIN_V = 2.25
 VAD_GAIN_A = 2.05
 VAD_GAIN_D = 3.8
+TRACKING_PROFILES = {
+    "normal": {
+        "hand_detection": 0.5,
+        "hand_presence": 0.5,
+        "tracking": 0.5,
+        "hand_grace": 0.22,
+        "lost_timeout": 0.35,
+    },
+    "lowlight": {
+        "hand_detection": 0.35,
+        "hand_presence": 0.35,
+        "tracking": 0.45,
+        "hand_grace": 0.8,
+        "lost_timeout": 0.8,
+    },
+}
+CAMERA_BACKENDS = {
+    "auto": None,
+    "any": cv2.CAP_ANY,
+    "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
+    "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
+    "v4l2": getattr(cv2, "CAP_V4L2", cv2.CAP_ANY),
+    "avfoundation": getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY),
+}
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -486,9 +515,163 @@ def end_interaction(
     footprint_store.remember_pending(world_vad)
 
 
+def open_video_capture(camera_index: int, backend_name: str):
+    backend = CAMERA_BACKENDS.get(backend_name)
+    if backend is None:
+        return cv2.VideoCapture(camera_index)
+    return cv2.VideoCapture(camera_index, backend)
+
+
+def set_camera_prop(cap, prop_id: int, label: str, value: float | None) -> None:
+    if value is None:
+        return
+    ok = cap.set(prop_id, value)
+    actual = cap.get(prop_id)
+    if not ok:
+        print(f"[final_interaction] camera prop unsupported or rejected -> {label} requested={value} actual={actual}")
+
+
+def camera_props_label(cap) -> str:
+    props = [
+        ("w", cv2.CAP_PROP_FRAME_WIDTH),
+        ("h", cv2.CAP_PROP_FRAME_HEIGHT),
+        ("fps", cv2.CAP_PROP_FPS),
+        ("exp", cv2.CAP_PROP_EXPOSURE),
+        ("gain", cv2.CAP_PROP_GAIN),
+        ("bri", cv2.CAP_PROP_BRIGHTNESS),
+        ("con", cv2.CAP_PROP_CONTRAST),
+        ("gam", cv2.CAP_PROP_GAMMA),
+        ("focus", cv2.CAP_PROP_FOCUS),
+    ]
+    parts = []
+    for label, prop_id in props:
+        value = cap.get(prop_id)
+        if value == -1:
+            parts.append(f"{label}=-")
+        elif label in {"w", "h", "fps"}:
+            parts.append(f"{label}={value:.0f}")
+        else:
+            parts.append(f"{label}={value:.2f}")
+    return "cam " + " ".join(parts)
+
+
+def build_rescue_candidates(
+    right_tracker: FinalHandTracker,
+    left_tracker: FinalHandTracker,
+    pose_landmarks: dict[str, tuple[float, float]] | None,
+) -> list[RescueCandidate]:
+    candidates: list[RescueCandidate] = []
+    for tracker in (right_tracker, left_tracker):
+        center = tracker.rescue_center(pose_landmarks)
+        if center is None:
+            continue
+        candidates.append(
+            RescueCandidate(
+                expected_side=tracker.expected_mp_side,
+                center=(clamp(center[0], 0.0, 1.0), clamp(center[1], 0.0, 1.0)),
+                source=tracker.control_hand,
+            )
+        )
+    return candidates
+
+
+class TrackingLogWriter:
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.last_write_at = 0.0
+        self.file = None
+        self.csv_writer = None
+        self.csv_fields = [
+            "timestamp",
+            "frame_index",
+            "mode",
+            "interaction_active",
+            "luma_mean",
+            "luma_std",
+            "preprocess_applied",
+            "hand_count",
+            "roi_rescue_count",
+            "both_visible",
+            "both_open",
+            "both_grab",
+            "left_visible",
+            "left_hand_visible",
+            "left_open",
+            "left_grab",
+            "left_palm_radius",
+            "left_fallback_age",
+            "left_handedness_score",
+            "right_visible",
+            "right_hand_visible",
+            "right_open",
+            "right_grab",
+            "right_palm_radius",
+            "right_fallback_age",
+            "right_handedness_score",
+        ]
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = path.open("w", encoding="utf-8", newline="")
+        if path.suffix.lower() == ".csv":
+            self.csv_writer = csv.DictWriter(self.file, fieldnames=self.csv_fields)
+            self.csv_writer.writeheader()
+
+    def write(self, state) -> None:
+        if self.file is None:
+            return
+        if state.timestamp - self.last_write_at < 0.1:
+            return
+        self.last_write_at = state.timestamp
+        row = {
+            "timestamp": f"{state.timestamp:.3f}",
+            "frame_index": state.frame_index,
+            "mode": state.mode,
+            "interaction_active": int(state.interaction_active),
+            "luma_mean": f"{state.luma_mean:.3f}",
+            "luma_std": f"{state.luma_std:.3f}",
+            "preprocess_applied": int(state.preprocess_applied),
+            "hand_count": state.hand_count,
+            "roi_rescue_count": state.roi_rescue_count,
+            "both_visible": int(state.both_visible),
+            "both_open": int(state.both_open),
+            "both_grab": int(state.both_grab),
+            "left_visible": int(state.left.visible),
+            "left_hand_visible": int(state.left.hand_visible),
+            "left_open": f"{state.left.open_strength:.3f}",
+            "left_grab": f"{state.left.grab_strength:.3f}",
+            "left_palm_radius": f"{state.left.palm_radius:.3f}",
+            "left_fallback_age": f"{state.left.fallback_age:.3f}",
+            "left_handedness_score": f"{state.left.handedness_score:.3f}",
+            "right_visible": int(state.right.visible),
+            "right_hand_visible": int(state.right.hand_visible),
+            "right_open": f"{state.right.open_strength:.3f}",
+            "right_grab": f"{state.right.grab_strength:.3f}",
+            "right_palm_radius": f"{state.right.palm_radius:.3f}",
+            "right_fallback_age": f"{state.right.fallback_age:.3f}",
+            "right_handedness_score": f"{state.right.handedness_score:.3f}",
+        }
+        if self.csv_writer is not None:
+            self.csv_writer.writerow(row)
+        else:
+            self.file.write(json.dumps(row, ensure_ascii=False) + "\n")
+        self.file.flush()
+
+    def close(self) -> None:
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Cosmos final grab/open interaction runtime")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument(
+        "--camera-backend",
+        choices=tuple(CAMERA_BACKENDS.keys()),
+        default="auto",
+        help="OpenCV camera backend. On Windows, dshow or msmf can expose different camera controls.",
+    )
     parser.add_argument("--send", action="store_true", help="Enable sending data to Unreal")
     parser.add_argument("--send-pd", action="store_true", help="Enable sending data to Pure Data")
     parser.add_argument(
@@ -521,6 +704,37 @@ def main() -> None:
     parser.add_argument("--camera-width", type=int, default=640, help="Requested webcam capture width.")
     parser.add_argument("--camera-height", type=int, default=360, help="Requested webcam capture height.")
     parser.add_argument("--camera-fps", type=int, default=30, help="Requested webcam FPS.")
+    parser.add_argument("--camera-exposure", type=float, default=None, help="Optional camera exposure value.")
+    parser.add_argument("--camera-gain", type=float, default=None, help="Optional camera gain value.")
+    parser.add_argument("--camera-brightness", type=float, default=None, help="Optional camera brightness value.")
+    parser.add_argument("--camera-contrast", type=float, default=None, help="Optional camera contrast value.")
+    parser.add_argument("--camera-gamma", type=float, default=None, help="Optional camera gamma value.")
+    parser.add_argument("--camera-focus", type=float, default=None, help="Optional camera focus value.")
+    parser.add_argument(
+        "--preprocess",
+        choices=("off", "auto", "lowlight"),
+        default="auto",
+        help="Apply inference-only low-light enhancement. Preview remains the original camera frame.",
+    )
+    parser.add_argument("--preprocess-alpha", type=float, default=1.12, help="Low-light contrast gain.")
+    parser.add_argument("--preprocess-beta", type=int, default=8, help="Low-light brightness bias.")
+    parser.add_argument("--preprocess-clahe-clip", type=float, default=2.0, help="CLAHE clip limit.")
+    parser.add_argument("--preprocess-clahe-grid", type=int, default=8, help="CLAHE tile grid size.")
+    parser.add_argument(
+        "--tracking-profile",
+        choices=tuple(TRACKING_PROFILES.keys()),
+        default="normal",
+        help="normal preserves current sensitivity; lowlight lowers thresholds and extends fallback timing.",
+    )
+    parser.add_argument(
+        "--roi-rescue",
+        choices=("off", "auto", "on"),
+        default="auto",
+        help="Run pose/last-position crop re-detection when full-frame hand detection is incomplete.",
+    )
+    parser.add_argument("--roi-rescue-size", type=float, default=0.28, help="Square crop size as a fraction of the shorter frame edge.")
+    parser.add_argument("--roi-rescue-scale", type=float, default=2.5, help="Upscale factor for ROI rescue crops.")
+    parser.add_argument("--tracking-log", type=Path, default=None, help="Optional .jsonl or .csv tracking diagnostics log path.")
     parser.add_argument(
         "--pose-every",
         type=int,
@@ -550,7 +764,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cap = cv2.VideoCapture(args.camera)
+    cap = open_video_capture(args.camera, args.camera_backend)
     if not cap.isOpened():
         print(f"[ERROR] camera {args.camera} could not be opened")
         sys.exit(1)
@@ -561,11 +775,42 @@ def main() -> None:
     if args.camera_fps > 0:
         cap.set(cv2.CAP_PROP_FPS, args.camera_fps)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    set_camera_prop(cap, cv2.CAP_PROP_EXPOSURE, "exposure", args.camera_exposure)
+    set_camera_prop(cap, cv2.CAP_PROP_GAIN, "gain", args.camera_gain)
+    set_camera_prop(cap, cv2.CAP_PROP_BRIGHTNESS, "brightness", args.camera_brightness)
+    set_camera_prop(cap, cv2.CAP_PROP_CONTRAST, "contrast", args.camera_contrast)
+    set_camera_prop(cap, cv2.CAP_PROP_GAMMA, "gamma", args.camera_gamma)
+    set_camera_prop(cap, cv2.CAP_PROP_FOCUS, "focus", args.camera_focus)
+    camera_props = camera_props_label(cap)
+    print(f"[final_interaction] camera backend={args.camera_backend} {camera_props}")
 
-    hand_extractor = HandExtractor()
+    profile = TRACKING_PROFILES[args.tracking_profile]
+    roi_enabled = args.roi_rescue == "on" or (args.roi_rescue == "auto" and args.tracking_profile == "lowlight")
+    preprocessor = FramePreprocessor(
+        PreprocessConfig(
+            mode=args.preprocess,
+            alpha=args.preprocess_alpha,
+            beta=args.preprocess_beta,
+            clahe_clip_limit=args.preprocess_clahe_clip,
+            clahe_tile_grid=args.preprocess_clahe_grid,
+        )
+    )
+    roi_config = RoiRescueConfig(
+        enabled=roi_enabled,
+        size_fraction=args.roi_rescue_size,
+        scale=args.roi_rescue_scale,
+    )
+    hand_extractor = HandExtractor(
+        min_hand_detection_confidence=profile["hand_detection"],
+        min_hand_presence_confidence=profile["hand_presence"],
+        min_tracking_confidence=profile["tracking"],
+        enable_image_mode=roi_enabled,
+    )
     pose_extractor = PoseExtractor()
-    right_tracker = FinalHandTracker(control_hand="RIGHT")
-    left_tracker = FinalHandTracker(control_hand="LEFT")
+    right_tracker = FinalHandTracker(control_hand="RIGHT", grace_seconds=profile["hand_grace"])
+    left_tracker = FinalHandTracker(control_hand="LEFT", grace_seconds=profile["hand_grace"])
+    lost_timeout = profile["lost_timeout"]
+    tracking_log = TrackingLogWriter(args.tracking_log)
     ue = FinalUEBridge(enabled=args.send)
     pd = FinalPDBridge(enabled=args.send_pd)
     ue.start()
@@ -623,7 +868,8 @@ def main() -> None:
 
             now = time.time()
             frame = cv2.flip(frame, 1)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            preprocess_result = preprocessor.process(frame)
+            frame_rgb = cv2.cvtColor(preprocess_result.frame_bgr, cv2.COLOR_BGR2RGB)
 
             pose_started = time.perf_counter()
             if args.pose_every <= 0:
@@ -637,6 +883,15 @@ def main() -> None:
             after_pose = time.perf_counter()
 
             hand_results = hand_extractor.process(frame_rgb)
+            rescue_stats = None
+            if roi_enabled and hand_count(hand_results) < 2:
+                hand_results, rescue_stats = rescue_hand_results(
+                    image_detector=hand_extractor.detect_image,
+                    frame_rgb=frame_rgb,
+                    base_results=hand_results,
+                    candidates=build_rescue_candidates(right_tracker, left_tracker, pose_landmarks),
+                    config=roi_config,
+                )
             after_hand = time.perf_counter()
             right_features = right_tracker.update(hand_results, pose_landmarks, now)
             left_features = left_tracker.update(hand_results, pose_landmarks, now)
@@ -654,13 +909,8 @@ def main() -> None:
             base_vad = memory.current_base()
             pointer_world_active = world_vad_state.is_world_active()
             both_visible = right_features.visible and left_features.visible
-            both_open = (
-                both_visible
-                and right_features.open_strength >= 0.62
-                and left_features.open_strength >= 0.62
-                and (right_features.open_strength + left_features.open_strength) * 0.5 >= 0.72
-            )
-            both_grab = both_visible and right_features.grab_active and left_features.grab_active
+            both_open = actual_both_open(right_features, left_features)
+            both_grab = actual_both_grab(right_features, left_features)
             interaction_both_open = pointer_world_active and both_open
             interaction_both_grab = pointer_world_active and both_grab
 
@@ -779,7 +1029,7 @@ def main() -> None:
                 else:
                     if session.lost_started_at is None:
                         session.lost_started_at = now
-                    elif now - session.lost_started_at >= 0.35:
+                    elif now - session.lost_started_at >= lost_timeout:
                         end_interaction(session, footprint_store, world_vad, now)
 
             if not session.active and session.released_at is not None:
@@ -805,8 +1055,8 @@ def main() -> None:
 
             pointer_x = pointer_xy[0] if session.active and both_visible else -1.0
             pointer_y = pointer_xy[1] if session.active and both_visible else -1.0
-            left_pointer_active = pointer_world_active and left_features.visible and left_features.grab_active
-            right_pointer_active = pointer_world_active and right_features.visible and right_features.grab_active
+            left_pointer_active = pointer_world_active and left_features.hand_visible and left_features.grab_active
+            right_pointer_active = pointer_world_active and right_features.hand_visible and right_features.grab_active
 
             if left_pointer_active and not session.left_pointer_locked:
                 session.left_pointer_locked = True
@@ -882,7 +1132,14 @@ def main() -> None:
                 left_pointer_active=left_pointer_active,
                 right_pointer_active=right_pointer_active,
                 payload=payload,
+                luma_mean=preprocess_result.luma_mean,
+                luma_std=preprocess_result.luma_std,
+                preprocess_applied=preprocess_result.applied,
+                hand_count=hand_count(hand_results),
+                roi_rescue_count=rescue_stats.added if rescue_stats is not None else 0,
+                camera_props=camera_props,
             )
+            tracking_log.write(hud_state)
 
             if args.send:
                 ue.send(payload)
@@ -945,6 +1202,8 @@ def main() -> None:
                     perf_acc = {"capture": 0.0, "pose": 0.0, "hand": 0.0, "logic": 0.0, "draw": 0.0, "hud": 0.0}
     finally:
         hud.close()
+        tracking_log.close()
+        world_vad_state.close()
         cap.release()
         cv2.destroyAllWindows()
         hand_extractor.close()

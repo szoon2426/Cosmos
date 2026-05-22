@@ -154,3 +154,28 @@ HUD는 Windows에서 `pywin32`로 click-through/topmost 창 스타일을 적용�
 ## 종료
 
 실행 중 표시되는 카메라 프리뷰 창에서 `q`를 누르면 종료합니다.
+
+## Low-light / distance tracking profile
+
+For the final exhibition setup, prefer a softly lit interaction area with the
+visitor's hands about 1-2m from the camera. A 720p camera feed gives MediaPipe
+more hand pixels to work with than the default 640x360 compatibility mode.
+
+Recommended low-light run:
+
+```powershell
+uv run final-interaction --camera 0 --tracking-profile lowlight --preprocess auto --camera-width 1280 --camera-height 720 --camera-fps 30 --debug-overlay --perf-log-sec 2
+```
+
+Useful camera controls, when supported by the camera driver:
+
+```powershell
+uv run final-interaction --camera 0 --camera-backend dshow --camera-exposure -5 --camera-gain 80 --camera-brightness 120 --camera-contrast 40 --camera-focus 0
+```
+
+Diagnostics:
+
+- `--debug-overlay` shows luminance mean/stddev, preprocessing state, hand count,
+  ROI rescue count, fallback age, handedness score, palm radius, and camera props.
+- `--tracking-log tracking_lowlight.jsonl` writes 10Hz JSONL diagnostics.
+- Use `.csv` as the log suffix to write CSV instead.

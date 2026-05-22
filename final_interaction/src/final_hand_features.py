@@ -67,6 +67,7 @@ class OneEuroFilter:
 @dataclass(slots=True)
 class FinalHandFeatures:
     visible: bool = False
+    hand_visible: bool = False
     side: str = ""
     x: float = 0.5
     y: float = 0.5
@@ -77,6 +78,8 @@ class FinalHandFeatures:
     speed: float = 0.0
     palm_radius: float = 0.0
     pose_fallback: bool = False
+    fallback_age: float = 0.0
+    handedness_score: float = 0.0
     index_ratio: float = 0.0
     middle_ratio: float = 0.0
     ring_ratio: float = 0.0
@@ -90,7 +93,7 @@ class FinalHandTracker:
     labels are mirrored from the visitor's point of view.
     """
 
-    def __init__(self, control_hand: str = "RIGHT") -> None:
+    def __init__(self, control_hand: str = "RIGHT", *, grace_seconds: float = 0.22) -> None:
         control_hand = control_hand.upper()
         self.control_hand = control_hand if control_hand in ("LEFT", "RIGHT") else "RIGHT"
         self.expected_mp_side = "LEFT" if self.control_hand == "RIGHT" else "RIGHT"
@@ -102,7 +105,7 @@ class FinalHandTracker:
         self.open_filter = OneEuroFilter(min_cutoff=1.65, beta=0.18)
         self.grab_filter = OneEuroFilter(min_cutoff=1.10, beta=0.08)
         self.radius_filter = OneEuroFilter(min_cutoff=0.95, beta=0.06)
-        self.grace_seconds = 0.22
+        self.grace_seconds = max(0.0, grace_seconds)
         self.grab_hold_seconds = 0.18
 
         self.last_filtered_xyz: tuple[float, float, float] | None = None
@@ -130,16 +133,19 @@ class FinalHandTracker:
                 # Keep the last stable pose for a brief moment, while easing out motion.
                 return FinalHandFeatures(
                     visible=True,
+                    hand_visible=False,
                     side=self.last_features.side,
                     x=x,
                     y=y,
                     z=self.last_features.z,
-                    open_strength=self.last_features.open_strength,
-                    grab_strength=self.last_features.grab_strength,
-                    grab_active=self.last_features.grab_active,
+                    open_strength=self.last_features.open_strength * (1.0 - 0.35 * grace_t),
+                    grab_strength=self.last_features.grab_strength * (1.0 - 0.55 * grace_t),
+                    grab_active=self.last_features.grab_active and grace_t <= 0.45,
                     speed=self.last_features.speed * (1.0 - grace_t),
                     palm_radius=self.last_features.palm_radius,
                     pose_fallback=fallback_xy is not None,
+                    fallback_age=now - self.last_seen_time,
+                    handedness_score=self.last_features.handedness_score,
                     index_ratio=self.last_features.index_ratio,
                     middle_ratio=self.last_features.middle_ratio,
                     ring_ratio=self.last_features.ring_ratio,
@@ -149,7 +155,7 @@ class FinalHandTracker:
             self.last_features = None
             return FinalHandFeatures()
 
-        side, landmarks = hand
+        side, landmarks, handedness_score = hand
         points = {idx: (landmarks[idx].x, landmarks[idx].y) for idx in (0, 4, 5, 8, 9, 12, 13, 16, 17, 20)}
 
         center = self._compute_center(points)
@@ -210,6 +216,7 @@ class FinalHandTracker:
 
         features = FinalHandFeatures(
             visible=True,
+            hand_visible=True,
             side=side,
             x=clamp(filtered_x, 0.0, 1.0),
             y=clamp(filtered_y, 0.0, 1.0),
@@ -220,6 +227,8 @@ class FinalHandTracker:
             speed=speed,
             palm_radius=filtered_radius,
             pose_fallback=pose_fallback,
+            fallback_age=0.0,
+            handedness_score=handedness_score,
             index_ratio=extension_ratios[0],
             middle_ratio=extension_ratios[1],
             ring_ratio=extension_ratios[2],
@@ -233,13 +242,16 @@ class FinalHandTracker:
         if not getattr(hand_results, "hand_landmarks", None):
             return None
 
+        def handed_side(handed) -> str:
+            return str(getattr(handed, "display_name", "") or getattr(handed, "category_name", "")).upper()
+
         expected_candidates: list[tuple[int, float]] = []
         fallback_candidates: list[tuple[int, float, float]] = []
         for idx, _ in enumerate(hand_results.hand_landmarks):
             if idx >= len(hand_results.handedness):
                 continue
             handed = hand_results.handedness[idx][0]
-            side = handed.display_name.upper()
+            side = handed_side(handed)
             score = float(getattr(handed, "score", 0.0))
             if side not in ("LEFT", "RIGHT"):
                 continue
@@ -258,8 +270,10 @@ class FinalHandTracker:
 
         if expected_candidates:
             best_idx = max(expected_candidates, key=lambda item: item[1])[0]
-            side = hand_results.handedness[best_idx][0].display_name.upper()
-            return side, hand_results.hand_landmarks[best_idx]
+            handed = hand_results.handedness[best_idx][0]
+            side = handed_side(handed)
+            score = float(getattr(handed, "score", 0.0))
+            return side, hand_results.hand_landmarks[best_idx], score
 
         if not fallback_candidates:
             return None
@@ -267,10 +281,17 @@ class FinalHandTracker:
         # If handedness flips for the same physical hand, allow a very local fallback.
         nearest_idx, _, nearest_distance = min(fallback_candidates, key=lambda item: item[2])
         if self.last_features is not None and nearest_distance <= 0.08:
-            side = hand_results.handedness[nearest_idx][0].display_name.upper()
-            return side, hand_results.hand_landmarks[nearest_idx]
+            handed = hand_results.handedness[nearest_idx][0]
+            side = handed_side(handed)
+            score = float(getattr(handed, "score", 0.0))
+            return side, hand_results.hand_landmarks[nearest_idx], score
 
         return None
+
+    def rescue_center(self, pose_landmarks: dict[str, tuple[float, float]] | None) -> tuple[float, float] | None:
+        if self.last_features is not None:
+            return self.last_features.x, self.last_features.y
+        return self._pose_center_from_support(self._compute_pose_support(pose_landmarks))
 
     def _landmark_center(self, landmarks) -> tuple[float, float]:
         wrist = landmarks[0]
@@ -354,3 +375,28 @@ class FinalHandTracker:
         mean_term = sum(compact_terms) / len(compact_terms)
         max_term = max(compact_terms)
         return clamp(0.72 * mean_term + 0.28 * max_term, 0.0, 1.0)
+
+
+def actual_both_open(
+    right_features: FinalHandFeatures,
+    left_features: FinalHandFeatures,
+    *,
+    min_each: float = 0.62,
+    min_average: float = 0.72,
+) -> bool:
+    return (
+        right_features.hand_visible
+        and left_features.hand_visible
+        and right_features.open_strength >= min_each
+        and left_features.open_strength >= min_each
+        and (right_features.open_strength + left_features.open_strength) * 0.5 >= min_average
+    )
+
+
+def actual_both_grab(right_features: FinalHandFeatures, left_features: FinalHandFeatures) -> bool:
+    return (
+        right_features.hand_visible
+        and left_features.hand_visible
+        and right_features.grab_active
+        and left_features.grab_active
+    )

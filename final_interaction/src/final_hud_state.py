@@ -13,6 +13,7 @@ except ImportError:
 @dataclass(slots=True)
 class HudHandState:
     visible: bool
+    hand_visible: bool
     x: float
     y: float
     z: float
@@ -21,6 +22,8 @@ class HudHandState:
     grab_active: bool
     palm_radius: float
     pose_fallback: bool
+    fallback_age: float
+    handedness_score: float
 
 
 @dataclass(slots=True)
@@ -51,11 +54,18 @@ class HudFrameState:
     left_pointer_z: float
     right_pointer_y: float
     right_pointer_z: float
+    luma_mean: float
+    luma_std: float
+    preprocess_applied: bool
+    hand_count: int
+    roi_rescue_count: int
+    camera_props: str
 
 
 def hud_hand_state(features: FinalHandFeatures) -> HudHandState:
     return HudHandState(
         visible=features.visible,
+        hand_visible=features.hand_visible,
         x=features.x,
         y=features.y,
         z=features.z,
@@ -64,6 +74,8 @@ def hud_hand_state(features: FinalHandFeatures) -> HudHandState:
         grab_active=features.grab_active,
         palm_radius=features.palm_radius,
         pose_fallback=features.pose_fallback,
+        fallback_age=features.fallback_age,
+        handedness_score=features.handedness_score,
     )
 
 
@@ -83,6 +95,12 @@ def hud_frame_state(
     left_pointer_active: bool,
     right_pointer_active: bool,
     payload: FinalInteractionPayload,
+    luma_mean: float = 0.0,
+    luma_std: float = 0.0,
+    preprocess_applied: bool = False,
+    hand_count: int = 0,
+    roi_rescue_count: int = 0,
+    camera_props: str = "",
 ) -> HudFrameState:
     return HudFrameState(
         timestamp=timestamp,
@@ -111,4 +129,10 @@ def hud_frame_state(
         left_pointer_z=payload.l_z_location,
         right_pointer_y=payload.r_y_location,
         right_pointer_z=payload.r_z_location,
+        luma_mean=luma_mean,
+        luma_std=luma_std,
+        preprocess_applied=preprocess_applied,
+        hand_count=hand_count,
+        roi_rescue_count=roi_rescue_count,
+        camera_props=camera_props,
     )

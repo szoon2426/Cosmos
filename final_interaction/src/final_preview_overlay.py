@@ -164,8 +164,8 @@ def _draw_core_status(frame, state: HudFrameState, *, debug: bool) -> None:
     _draw_bar(frame, label="D", value=state.target_d, origin=(20, 92), size=(120, 12), color=(130, 255, 130))
 
     hand_line = (
-        f"L vis={state.left.visible} open={state.left.open_strength:.2f} grab={state.left.grab_strength:.2f} "
-        f"R vis={state.right.visible} open={state.right.open_strength:.2f} grab={state.right.grab_strength:.2f}"
+        f"L hand={state.left.hand_visible} vis={state.left.visible} open={state.left.open_strength:.2f} grab={state.left.grab_strength:.2f} "
+        f"R hand={state.right.hand_visible} vis={state.right.visible} open={state.right.open_strength:.2f} grab={state.right.grab_strength:.2f}"
     )
     _draw_text(frame, hand_line, (20, 126), 0.42, (220, 245, 220))
 
@@ -177,6 +177,17 @@ def _draw_core_status(frame, state: HudFrameState, *, debug: bool) -> None:
             f"Ryz=({state.right_pointer_y:.1f},{state.right_pointer_z:.1f})"
         )
         _draw_text(frame, detail, (20, 150), 0.38, (210, 210, 255))
+        quality = (
+            f"luma={state.luma_mean:.1f}/{state.luma_std:.1f} pre={state.preprocess_applied} "
+            f"hands={state.hand_count} rescue={state.roi_rescue_count} "
+            f"Lscore={state.left.handedness_score:.2f} Lage={state.left.fallback_age:.2f} "
+            f"Lpalm={state.left.palm_radius:.2f} "
+            f"Rscore={state.right.handedness_score:.2f} Rage={state.right.fallback_age:.2f} "
+            f"Rpalm={state.right.palm_radius:.2f}"
+        )
+        _draw_text(frame, quality, (20, 174), 0.38, (255, 230, 180))
+        if state.camera_props:
+            _draw_text(frame, state.camera_props, (20, 198), 0.34, (200, 230, 255))
 
 
 def draw_preview_overlay(
