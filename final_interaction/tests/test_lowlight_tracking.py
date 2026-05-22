@@ -648,6 +648,101 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertEqual(left_solo_switch_world_id("world_0001", latest), "galaxy")
         self.assertIsNone(left_solo_switch_world_id("space", None))
 
+    def test_latest_person_world_prefers_counter_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            world_dir = root / "worlds"
+            world_dir.mkdir()
+            person_map = root / "person_world_map.json"
+            person_map.write_text("{}", encoding="utf-8")
+            counter_path = root / "world_counter.txt"
+            counter_path.write_text("2", encoding="utf-8")
+            (world_dir / "world_0001.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_0001",
+                        "world_number": 1,
+                        "person_name": "Older",
+                        "created_at": "2026-05-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (world_dir / "world_0002.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_0002",
+                        "world_number": 2,
+                        "person_name": "Counter Latest",
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            latest = resolve_latest_person_world(world_dir, person_map, counter_path)
+
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest.world_id, "world_0002")
+            self.assertEqual(latest.world_number, 2)
+            self.assertEqual(latest.person_name, "Counter Latest")
+            self.assertEqual(left_solo_switch_world_id("galaxy", latest), "world_0002")
+
+    def test_latest_person_world_uses_counter_slot_30(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            world_dir = root / "worlds"
+            world_dir.mkdir()
+            person_map = root / "person_world_map.json"
+            person_map.write_text("{}", encoding="utf-8")
+            counter_path = root / "world_counter.txt"
+            counter_path.write_text("30", encoding="utf-8")
+            (world_dir / "world_0030.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_0030",
+                        "world_number": 30,
+                        "person_name": "Slot Thirty",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            latest = resolve_latest_person_world(world_dir, person_map, counter_path)
+
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest.world_id, "world_0030")
+            self.assertEqual(latest.world_number, 30)
+            self.assertEqual(latest.person_name, "Slot Thirty")
+
+    def test_latest_person_world_falls_back_when_counter_target_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            world_dir = root / "worlds"
+            world_dir.mkdir()
+            person_map = root / "person_world_map.json"
+            person_map.write_text("{}", encoding="utf-8")
+            counter_path = root / "world_counter.txt"
+            counter_path.write_text("2", encoding="utf-8")
+            (world_dir / "world_0001.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_0001",
+                        "world_number": 1,
+                        "person_name": "Fallback",
+                        "created_at": "2026-05-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            latest = resolve_latest_person_world(world_dir, person_map, counter_path)
+
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest.world_id, "world_0001")
+            self.assertEqual(latest.world_number, 1)
+            self.assertEqual(latest.person_name, "Fallback")
+
     def test_latest_person_world_uses_created_at(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

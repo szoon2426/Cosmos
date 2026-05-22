@@ -100,31 +100,37 @@ def max_world_number_in_dirs(paths: list[Path] | None) -> int:
             match = WORLD_ID_PATTERN.match(json_path.stem)
             if not match:
                 continue
-            max_number = max(max_number, int(match.group(1)))
+            number = int(match.group(1))
+            if 1 <= number <= WORLD_SLOT_LIMIT:
+                max_number = max(max_number, number)
         for json_path in path.glob("*.json"):
             try:
                 data = json.loads(json_path.read_text(encoding="utf-8-sig"))
             except (OSError, json.JSONDecodeError):
                 continue
             world_id = str(data.get("world_id", ""))
-            if not WORLD_ID_PATTERN.match(world_id):
+            match = WORLD_ID_PATTERN.match(world_id)
+            if not match:
                 continue
-            try:
-                max_number = max(max_number, int(data.get("world_number", 0)))
-            except (TypeError, ValueError):
-                continue
+            number = int(match.group(1))
+            if 1 <= number <= WORLD_SLOT_LIMIT:
+                max_number = max(max_number, number)
     return max_number
 
 
 def next_world_number(counter_path: Path, existing_dirs: list[Path] | None = None) -> int:
     counter_path.parent.mkdir(parents=True, exist_ok=True)
+    current: int | None = None
     if counter_path.exists():
         raw = counter_path.read_text(encoding="utf-8").strip()
-        current = int(raw or "0")
-    else:
-        current = 0
-    highest_seen = max(current, max_world_number_in_dirs(existing_dirs))
-    value = 1 if highest_seen >= WORLD_SLOT_LIMIT else highest_seen + 1
+        if raw:
+            try:
+                current = int(raw)
+            except ValueError:
+                current = None
+    if current is None or current <= 0:
+        current = max_world_number_in_dirs(existing_dirs)
+    value = (current % WORLD_SLOT_LIMIT) + 1
     counter_path.write_text(str(value), encoding="utf-8")
     return value
 

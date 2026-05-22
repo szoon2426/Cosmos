@@ -62,6 +62,7 @@ VAD_GAIN_D = 3.8
 VAD_MEMORY_BLEND_ALPHA = 0.15
 VAD_RELEASE_HOLD_SECONDS = 5.0
 VAD_RECOVERY_ALPHA = 1.0 / (25.0 * 30.0)
+WORLD_SLOT_LIMIT = 30
 TRACKING_PROFILES = {
     "normal": {
         "hand_detection": 0.5,
@@ -230,10 +231,45 @@ def resolve_latest_person_world_from_map(
     return None
 
 
+def world_slot_from_counter_path(world_counter_path: Path) -> int | None:
+    try:
+        raw = world_counter_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return ((value - 1) % WORLD_SLOT_LIMIT) + 1
+
+
+def resolve_latest_person_world_from_counter(
+    world_json_dir: Path,
+    world_counter_path: Path,
+) -> LatestPersonWorld | None:
+    slot = world_slot_from_counter_path(world_counter_path)
+    if slot is None:
+        return None
+    candidate = load_person_world_candidate(world_json_dir / f"world_{slot:04d}.json")
+    if candidate is None:
+        return None
+    return candidate[1]
+
+
 def resolve_latest_person_world(
     world_json_dir: Path,
     person_world_map_path: Path,
+    world_counter_path: Path | None = None,
 ) -> LatestPersonWorld | None:
+    if world_counter_path is not None:
+        latest_from_counter = resolve_latest_person_world_from_counter(world_json_dir, world_counter_path)
+        if latest_from_counter is not None:
+            return latest_from_counter
+
     candidates: list[tuple[float, LatestPersonWorld]] = []
     try:
         paths = list(world_json_dir.glob("*.json"))
@@ -255,13 +291,18 @@ def resolve_latest_person_world(
 class LatestPersonWorldResolver:
     world_json_dir: Path
     person_world_map_path: Path
+    world_counter_path: Path | None = None
     refresh_interval_sec: float = 0.5
     latest: LatestPersonWorld | None = None
     next_refresh_at: float = 0.0
 
     def get(self, now: float) -> LatestPersonWorld | None:
         if self.latest is None or now >= self.next_refresh_at:
-            self.latest = resolve_latest_person_world(self.world_json_dir, self.person_world_map_path)
+            self.latest = resolve_latest_person_world(
+                self.world_json_dir,
+                self.person_world_map_path,
+                self.world_counter_path,
+            )
             self.next_refresh_at = now + self.refresh_interval_sec
         return self.latest
 
@@ -1016,6 +1057,12 @@ def main() -> None:
         help="JSON map from person names to world ids.",
     )
     parser.add_argument(
+        "--world-counter-path",
+        type=Path,
+        default=Path(__file__).resolve().parents[2] / "windows_world_pipeline" / "eeg_interpreter" / "world_counter.txt",
+        help="Path to the ring-buffer world counter used to resolve the latest generated world.",
+    )
+    parser.add_argument(
         "--world-poll-sec",
         type=float,
         default=0.1,
@@ -1151,6 +1198,7 @@ def main() -> None:
     latest_person_world_resolver = LatestPersonWorldResolver(
         world_json_dir=args.world_json_dir,
         person_world_map_path=args.person_world_map,
+        world_counter_path=args.world_counter_path,
     )
     session = InteractionSession()
     pointer_state = PointerRuntimeState()

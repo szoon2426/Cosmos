@@ -116,6 +116,7 @@ uv run final-interaction --camera 0 --send --send-pd
 --base-a FLOAT              기본 arousal 값. 기본값: 0.0
 --base-d FLOAT              기본 dominance 값. 기본값: 0.0
 --world-json-dir PATH       world_XXXX.json 파일 폴더. 기본값: ../world_spawn_json
+--world-counter-path PATH   최신 생성 월드 슬롯 counter 파일. 기본값: ../windows_world_pipeline/eeg_interpreter/world_counter.txt
 --world-poll-sec FLOAT      Unreal에서 현재 world id를 읽는 주기. 기본값: 0.1
 --vad-footprint-dir PATH    world별 VAD footprint 저장 폴더. 기본값: ../vad_footprint
 --camera-width INT          요청할 웹캠 너비. 기본값: 1280

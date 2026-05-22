@@ -163,17 +163,21 @@ def test_next_world_number_wraps_after_slot_limit(tmp_path):
     counter_path = tmp_path / "world_counter.txt"
     worlds_dir = tmp_path / "worlds"
 
+    counter_path.write_text("1", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 2
+    assert counter_path.read_text(encoding="utf-8") == "2"
+
+    counter_path.write_text("29", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 30
+    assert counter_path.read_text(encoding="utf-8") == "30"
+
     counter_path.write_text("30", encoding="utf-8")
     assert next_world_number(counter_path, [worlds_dir]) == 1
     assert counter_path.read_text(encoding="utf-8") == "1"
 
     counter_path.write_text("35", encoding="utf-8")
-    assert next_world_number(counter_path, [worlds_dir]) == 1
-    assert counter_path.read_text(encoding="utf-8") == "1"
-
-    counter_path.write_text("29", encoding="utf-8")
-    assert next_world_number(counter_path, [worlds_dir]) == 30
-    assert counter_path.read_text(encoding="utf-8") == "30"
+    assert next_world_number(counter_path, [worlds_dir]) == 6
+    assert counter_path.read_text(encoding="utf-8") == "6"
 
 
 def test_next_world_number_wraps_when_existing_worlds_exceed_limit(tmp_path):
@@ -181,9 +185,19 @@ def test_next_world_number_wraps_when_existing_worlds_exceed_limit(tmp_path):
     worlds_dir = tmp_path / "worlds"
     write_json(worlds_dir / "world_0035.json", {"world_id": "world_0035", "world_number": 35})
 
-    counter_path.write_text("0", encoding="utf-8")
-    assert next_world_number(counter_path, [worlds_dir]) == 1
-    assert counter_path.read_text(encoding="utf-8") == "1"
+    counter_path.write_text("1", encoding="utf-8")
+    assert next_world_number(counter_path, [worlds_dir]) == 2
+    assert counter_path.read_text(encoding="utf-8") == "2"
+
+
+def test_next_world_number_bootstraps_from_existing_slots_only(tmp_path):
+    counter_path = tmp_path / "world_counter.txt"
+    worlds_dir = tmp_path / "worlds"
+    write_json(worlds_dir / "world_0029.json", {"world_id": "world_0029", "world_number": 29})
+    write_json(worlds_dir / "world_0037.json", {"world_id": "world_0037", "world_number": 37})
+
+    assert next_world_number(counter_path, [worlds_dir]) == 30
+    assert counter_path.read_text(encoding="utf-8") == "30"
 
 
 def test_generate_world_overwrites_reused_slot(monkeypatch, tmp_path):
