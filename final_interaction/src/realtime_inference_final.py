@@ -16,7 +16,7 @@ import cv2
 if __package__ in (None, ""):
     sys.path.append(str(Path(__file__).resolve().parent))
     from camera_preprocess import FramePreprocessor, PreprocessConfig
-    from final_hand_features import FinalHandTracker, actual_both_grab, actual_both_open
+    from final_hand_features import FinalHandFeatures, FinalHandTracker, actual_both_grab, actual_both_open
     from final_hud_qt import FinalHudController
     from final_hud_state import hud_frame_state
     from final_mapper import compute_final_payload
@@ -28,7 +28,7 @@ if __package__ in (None, ""):
     from pose_extractor import PoseExtractor
 else:
     from .camera_preprocess import FramePreprocessor, PreprocessConfig
-    from .final_hand_features import FinalHandTracker, actual_both_grab, actual_both_open
+    from .final_hand_features import FinalHandFeatures, FinalHandTracker, actual_both_grab, actual_both_open
     from .final_hud_qt import FinalHudController
     from .final_hud_state import hud_frame_state
     from .final_mapper import compute_final_payload
@@ -50,6 +50,9 @@ POINTER_HAND_DELTA_RANGE = 0.18
 POINTER_JOYSTICK_ACTIVE_ALPHA = 0.035
 POINTER_JOYSTICK_RETURN_ALPHA = 0.28
 GRAB_RECOVERY_SECONDS = 5.0
+LEFT_SOLO_GRAB_HOLD_SECONDS = 5.0
+LEFT_SOLO_GRAB_SWIPE_DELTA_X = 0.22
+LEFT_SOLO_GRAB_SWIPE_VELOCITY_X = 1.2
 VAD_DEADZONE_XY = 0.045
 VAD_DEADZONE_Z = 0.018
 VAD_RESPONSE_ALPHA = 0.35
@@ -204,6 +207,11 @@ class InteractionSession:
     thrust_fired_at: float | None = None
     retreat_started_at: float | None = None
     last_z: float = 0.0
+    left_solo_grab_started_at: float | None = None
+    left_solo_grab_anchor_x: float = 0.5
+    left_solo_grab_last_x: float = 0.5
+    left_solo_grab_last_at: float | None = None
+    left_solo_grab_fired: bool = False
 
 
 @dataclass(slots=True)
@@ -502,6 +510,65 @@ def joystick_pointer_location(
     return anchor_world_y + offset_y, POINTER_ANCHOR_Z + offset_z
 
 
+def reset_left_solo_galaxy_gesture(session: InteractionSession) -> None:
+    session.left_solo_grab_started_at = None
+    session.left_solo_grab_anchor_x = 0.5
+    session.left_solo_grab_last_x = 0.5
+    session.left_solo_grab_last_at = None
+    session.left_solo_grab_fired = False
+
+
+def update_left_solo_galaxy_gesture(
+    session: InteractionSession,
+    *,
+    pointer_world_active: bool,
+    left_features: FinalHandFeatures,
+    right_features: FinalHandFeatures,
+    world_vad: tuple[float, float, float],
+    world_base_vad: tuple[float, float, float],
+    now: float,
+) -> tuple[tuple[float, float, float], bool]:
+    left_only_grab = (
+        pointer_world_active
+        and left_features.hand_visible
+        and left_features.grab_active
+        and not (right_features.hand_visible and right_features.grab_active)
+    )
+    if not left_only_grab:
+        reset_left_solo_galaxy_gesture(session)
+        return world_vad, False
+
+    if session.left_solo_grab_started_at is None:
+        session.left_solo_grab_started_at = now
+        session.left_solo_grab_anchor_x = left_features.x
+        session.left_solo_grab_last_x = left_features.x
+        session.left_solo_grab_last_at = now
+        session.left_solo_grab_fired = False
+        return world_vad, False
+
+    previous_x = session.left_solo_grab_last_x
+    previous_at = session.left_solo_grab_last_at if session.left_solo_grab_last_at is not None else now
+    x_velocity = (left_features.x - previous_x) / max(now - previous_at, 1e-3)
+    delta_from_anchor = left_features.x - session.left_solo_grab_anchor_x
+    held = now - session.left_solo_grab_started_at >= LEFT_SOLO_GRAB_HOLD_SECONDS
+
+    switch_to_camera = (
+        held
+        and not session.left_solo_grab_fired
+        and delta_from_anchor >= LEFT_SOLO_GRAB_SWIPE_DELTA_X
+        and x_velocity >= LEFT_SOLO_GRAB_SWIPE_VELOCITY_X
+    )
+    if switch_to_camera:
+        session.left_solo_grab_fired = True
+
+    session.left_solo_grab_last_x = left_features.x
+    session.left_solo_grab_last_at = now
+
+    if held:
+        return world_base_vad, switch_to_camera
+    return world_vad, False
+
+
 def reset_interaction_session(session: InteractionSession) -> None:
     session.active = False
     session.mode = "idle"
@@ -514,6 +581,7 @@ def reset_interaction_session(session: InteractionSession) -> None:
     session.grab_recover_until = None
     session.left_pointer_locked = False
     session.right_pointer_locked = False
+    reset_left_solo_galaxy_gesture(session)
 
 
 def end_interaction(
@@ -1092,20 +1160,6 @@ def main() -> None:
                             # Open state holds the current world state without forcing it back yet.
                             pass
 
-                        if both_open and avg_z <= -0.08:
-                            session.thrust_ready = True
-
-                        z_velocity = (avg_z - session.last_z) / max(1e-3, 1 / 30.0)
-                        if (
-                            session.thrust_ready
-                            and both_open
-                            and z_velocity >= 1.6
-                            and avg_z >= 0.20
-                        ):
-                            switch_to_camera = True
-                            session.thrust_ready = False
-                            session.thrust_fired_at = now
-
                         # If the hand stays clearly pulled back while open, treat that as
                         # ending the interaction and let the pointer leave the screen.
                         if both_open and avg_z <= -0.28:
@@ -1123,6 +1177,18 @@ def main() -> None:
 
             if not session.active and session.released_at is not None:
                 world_vad = recover_world_vad_after_release(session, memory, world_vad, now)
+
+            raw_world_base_vad = footprint_store.base_vad if footprint_store.base_vad is not None else memory.current_base()
+            world_vad, left_solo_switch_to_camera = update_left_solo_galaxy_gesture(
+                session,
+                pointer_world_active=pointer_world_active,
+                left_features=left_features,
+                right_features=right_features,
+                world_vad=world_vad,
+                world_base_vad=raw_world_base_vad,
+                now=now,
+            )
+            switch_to_camera = switch_to_camera or left_solo_switch_to_camera
 
             if switch_to_camera:
                 footprint_store.record_interaction(world_vad, "switch_to_galaxy")

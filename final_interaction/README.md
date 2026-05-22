@@ -88,7 +88,8 @@ Preset: RCP_WorldVariable
 - `L_Y Location`, `L_ Z Location`
 - `R_Y Location`, `R_ Z Location`
 
-특정 thrust 동작이 감지되면 Unreal의 `SwitchToWorld` 또는 `Switch to World` 함수를 호출해 `galaxy` 월드로 전환합니다.
+왼손만 grab한 상태를 5초 이상 유지하면 VAD는 현재 월드 JSON의 기본 `base_vad`로 고정됩니다.
+그 상태에서 왼손을 화면 오른쪽으로 크고 빠르게 움직이면 Unreal의 `SwitchToWorld` 또는 `Switch to World` 함수를 호출해 `galaxy` 월드로 전환합니다.
 
 ## Pure Data로 값 보내기
 
