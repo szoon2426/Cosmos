@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,11 +15,17 @@ from src.camera_preprocess import FramePreprocessor, PreprocessConfig
 from src.final_hand_features import FinalHandFeatures, actual_both_open
 from src.hand_roi_rescue import CropRect, map_crop_landmarks_to_frame
 from src.realtime_inference_final import (
+    BaseMemoryState,
     GRAB_RECOVERY_SECONDS,
     InteractionSession,
+    PointerRuntimeState,
+    VADFootprintStore,
+    WorldVADState,
     activate_grab_session,
     can_recover_grab,
     end_interaction,
+    recover_world_vad_after_release,
+    reset_interaction_session,
 )
 
 
@@ -75,8 +83,8 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertFalse(actual_both_open(real_right, fallback_left))
 
     def test_lost_open_session_opens_grab_recovery_window(self) -> None:
-        remembered = []
-        store = SimpleNamespace(remember_pending=lambda vad: remembered.append(vad))
+        recorded = []
+        store = SimpleNamespace(record_interaction=lambda vad, reason: recorded.append((vad, reason)) or True)
         session = InteractionSession(active=True, mode="open")
 
         end_interaction(
@@ -92,7 +100,7 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(session.grab_recover_until, 100.0 + GRAB_RECOVERY_SECONDS)
         self.assertTrue(can_recover_grab(session, 104.9))
         self.assertFalse(can_recover_grab(session, 105.1))
-        self.assertEqual(remembered, [(0.1, 0.2, 0.3)])
+        self.assertEqual(recorded, [((0.1, 0.2, 0.3), "interaction_settled")])
 
     def test_activate_grab_session_enters_grab_without_open_anchor(self) -> None:
         session = InteractionSession(active=False, mode="idle", grab_recover_until=105.0)
@@ -113,6 +121,137 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertIsNone(session.grab_recover_until)
         self.assertEqual((session.grab_anchor_x, session.grab_anchor_y, session.grab_anchor_z), (0.4, 0.6, 0.2))
         self.assertEqual((session.grab_anchor_v, session.grab_anchor_a, session.grab_anchor_d), (0.1, -0.2, 0.3))
+
+    def test_vad_footprint_loads_base_when_no_memory_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = VADFootprintStore(Path(tmp_dir))
+            base_vad = (0.2, -0.4, 0.6)
+
+            loaded = store.load_world("world_a", base_vad)
+
+            self.assertEqual(loaded, base_vad)
+            data = json.loads((Path(tmp_dir) / "world_a.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["current_vad"], {"valence": 0.2, "arousal": -0.4, "dominance": 0.6})
+
+    def test_vad_footprint_blends_last_memory_at_fifteen_percent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "world_a.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_a",
+                        "base_vad": {"valence": 0.0, "arousal": 0.5, "dominance": -0.5},
+                        "current_vad": {"valence": 1.0, "arousal": -0.5, "dominance": 0.5},
+                        "vad_footprints": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = VADFootprintStore(Path(tmp_dir))
+
+            loaded = store.load_world("world_a", (0.0, 0.5, -0.5))
+
+            self.assertAlmostEqual(loaded[0], 0.15)
+            self.assertAlmostEqual(loaded[1], 0.35)
+            self.assertAlmostEqual(loaded[2], -0.35)
+
+    def test_vad_footprint_ignores_invalid_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "world_a.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_a",
+                        "base_vad": {"valence": 0.0, "arousal": 0.0, "dominance": 0.0},
+                        "current_vad": {"valence": "bad"},
+                        "vad_footprints": [{"reason": "old"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = VADFootprintStore(Path(tmp_dir))
+
+            loaded = store.load_world("world_a", (0.4, -0.2, 0.8))
+
+            self.assertEqual(loaded, (0.4, -0.2, 0.8))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["current_vad"], {"valence": 0.4, "arousal": -0.2, "dominance": 0.8})
+
+    def test_end_interaction_records_current_vad_without_changing_runtime_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = VADFootprintStore(Path(tmp_dir))
+            runtime_base = store.load_world("world_a", (0.0, 0.2, 0.4))
+            memory = BaseMemoryState(*runtime_base)
+            session = InteractionSession(active=True, mode="grab")
+
+            end_interaction(session, store, (0.7, -0.3, 0.1), 100.0)
+
+            self.assertEqual(memory.current_base(), runtime_base)
+            data = json.loads((Path(tmp_dir) / "world_a.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["current_vad"], {"valence": 0.7, "arousal": -0.3, "dominance": 0.1})
+            self.assertEqual(data["vad_footprints"][-1]["reason"], "interaction_settled")
+
+    def test_released_interaction_holds_then_recovers_to_runtime_base(self) -> None:
+        memory = BaseMemoryState(0.0, 0.5, -0.5)
+        session = InteractionSession(active=False, released_at=10.0)
+        world_vad = (1.0, 1.0, 1.0)
+
+        held = recover_world_vad_after_release(session, memory, world_vad, 14.9)
+        recovered = recover_world_vad_after_release(session, memory, world_vad, 15.0)
+
+        self.assertEqual(held, world_vad)
+        self.assertLess(recovered[0], world_vad[0])
+        self.assertLess(recovered[1], world_vad[1])
+        self.assertLess(recovered[2], world_vad[2])
+
+    def test_world_change_loads_blended_vad_and_resets_interaction_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            world_dir = root / "worlds"
+            footprint_dir = root / "footprints"
+            world_dir.mkdir()
+            footprint_dir.mkdir()
+            (world_dir / "world_a.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_a",
+                        "world_number": 7,
+                        "base_vad": {"valence": 0.0, "arousal": 0.5, "dominance": -0.5},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (footprint_dir / "world_a.json").write_text(
+                json.dumps(
+                    {
+                        "world_id": "world_a",
+                        "base_vad": {"valence": 0.0, "arousal": 0.5, "dominance": -0.5},
+                        "current_vad": {"valence": 1.0, "arousal": -0.5, "dominance": 0.5},
+                        "vad_footprints": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = VADFootprintStore(footprint_dir)
+            state = WorldVADState(world_json_dir=world_dir, footprint_store=store)
+            memory = BaseMemoryState(0.0, 0.0, 0.0)
+            session = InteractionSession(active=True, mode="grab", released_at=1.0, left_pointer_locked=True)
+            pointer_state = PointerRuntimeState(world_number=99, left_y=999.0)
+
+            try:
+                changed = state._apply_world_id("world_a", memory)
+                if changed:
+                    reset_interaction_session(session)
+                    pointer_state.reset(state.current_world_number)
+            finally:
+                state.close()
+
+            self.assertTrue(changed)
+            self.assertAlmostEqual(memory.current_base()[0], 0.15)
+            self.assertFalse(session.active)
+            self.assertIsNone(session.released_at)
+            self.assertFalse(session.left_pointer_locked)
+            self.assertEqual(pointer_state.world_number, 7)
 
 
 if __name__ == "__main__":

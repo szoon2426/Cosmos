@@ -56,6 +56,9 @@ VAD_RESPONSE_ALPHA = 0.35
 VAD_GAIN_V = 2.25
 VAD_GAIN_A = 2.05
 VAD_GAIN_D = 3.8
+VAD_MEMORY_BLEND_ALPHA = 0.15
+VAD_RELEASE_HOLD_SECONDS = 5.0
+VAD_RECOVERY_ALPHA = 1.0 / (25.0 * 30.0)
 TRACKING_PROFILES = {
     "normal": {
         "hand_detection": 0.5,
@@ -122,6 +125,17 @@ def dict_to_vad(data: dict[str, object]) -> tuple[float, float, float] | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def blend_vad(
+    base_vad: tuple[float, float, float],
+    memory_vad: tuple[float, float, float],
+    alpha: float = VAD_MEMORY_BLEND_ALPHA,
+) -> tuple[float, float, float]:
+    return tuple(
+        clamp(lerp(base_vad[idx], memory_vad[idx], alpha), -1.0, 1.0)
+        for idx in range(3)
+    )
 
 
 @dataclass(slots=True)
@@ -200,6 +214,11 @@ class PointerRuntimeState:
     right_y: float = POINTER_BASE_Y + POINTER_RIGHT_ANCHOR_OFFSET_Y
     right_z: float = POINTER_ANCHOR_Z
 
+    def reset(self, world_number: int | None) -> None:
+        self.world_number = world_number
+        self.left_y, self.left_z = pointer_anchor_y(world_number, "left"), POINTER_ANCHOR_Z
+        self.right_y, self.right_z = pointer_anchor_y(world_number, "right"), POINTER_ANCHOR_Z
+
     def update(
         self,
         *,
@@ -229,70 +248,54 @@ class VADFootprintStore:
     active_world_id: str | None = None
     base_vad: tuple[float, float, float] | None = None
     current_vad: tuple[float, float, float] | None = None
-    pending_vad: tuple[float, float, float] | None = None
+    runtime_base_vad: tuple[float, float, float] | None = None
 
     def load_world(self, world_id: str, base_vad: tuple[float, float, float]) -> tuple[float, float, float]:
         self.footprint_dir.mkdir(parents=True, exist_ok=True)
         self.active_world_id = world_id
         self.base_vad = base_vad
-        self.pending_vad = None
 
         path = self._path_for(world_id)
+        footprints: list[object] = []
+        memory_vad = base_vad
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 data = {}
+            loaded_footprints = data.get("vad_footprints")
+            if isinstance(loaded_footprints, list):
+                footprints = loaded_footprints
             current = data.get("current_vad")
             if isinstance(current, dict):
                 loaded = dict_to_vad(current)
                 if loaded is not None:
-                    self.current_vad = loaded
-                    return loaded
+                    memory_vad = loaded
 
-        self.current_vad = base_vad
-        self._write(world_id, base_vad, base_vad, [])
-        return base_vad
+        runtime_base_vad = blend_vad(base_vad, memory_vad)
+        self.current_vad = memory_vad
+        self.runtime_base_vad = runtime_base_vad
+        if not path.exists():
+            self._write(world_id, base_vad, base_vad, [])
+        elif memory_vad == base_vad:
+            self._write(world_id, base_vad, base_vad, footprints)
+        return runtime_base_vad
 
-    def remember_pending(self, vad: tuple[float, float, float]) -> None:
-        if self.active_world_id is None:
-            return
-        self.pending_vad = tuple(clamp(value, -1.0, 1.0) for value in vad)
+    def clear_active_world(self) -> None:
+        self.active_world_id = None
+        self.base_vad = None
+        self.current_vad = None
+        self.runtime_base_vad = None
 
-    def step_toward_pending(
-        self,
-        memory: BaseMemoryState,
-        world_vad: tuple[float, float, float],
-        alpha: float = 0.06,
-        epsilon: float = 0.006,
-    ) -> tuple[tuple[float, float, float], bool]:
-        if self.pending_vad is None:
-            return world_vad, False
-
-        target = self.pending_vad
-        next_vad = tuple(lerp(world_vad[idx], target[idx], alpha) for idx in range(3))
-        if max(abs(next_vad[idx] - target[idx]) for idx in range(3)) <= epsilon:
-            self.commit(target, "interaction_settled")
-            memory.set_base(*target)
-            return target, True
-        return next_vad, False
-
-    def commit_pending(self, memory: BaseMemoryState, reason: str) -> bool:
-        if self.pending_vad is None:
-            return False
-        target = self.pending_vad
-        self.commit(target, reason)
-        memory.set_base(*target)
-        return True
-
-    def commit_current(
+    def record_interaction(
         self,
         vad: tuple[float, float, float],
-        memory: BaseMemoryState,
         reason: str,
     ) -> bool:
-        self.pending_vad = tuple(clamp(value, -1.0, 1.0) for value in vad)
-        return self.commit_pending(memory, reason)
+        if self.active_world_id is None or self.base_vad is None:
+            return False
+        self.commit(tuple(clamp(value, -1.0, 1.0) for value in vad), reason)
+        return True
 
     def commit(self, vad: tuple[float, float, float], reason: str) -> None:
         if self.active_world_id is None or self.base_vad is None:
@@ -318,7 +321,6 @@ class VADFootprintStore:
         footprints.append(entry)
 
         self.current_vad = vad
-        self.pending_vad = None
         self._write(world_id, self.base_vad, vad, footprints)
         print(
             "[final_interaction] vad footprint -> "
@@ -384,11 +386,11 @@ class WorldVADState:
             return False
 
         if is_space_world_id(world_id):
-            self.footprint_store.commit_pending(memory, "space_switch")
+            self.footprint_store.clear_active_world()
             self.current_world_id = world_id
             self.current_world_number = None
             print(f"[final_interaction] current space -> {world_id}")
-            return False
+            return True
         if not world_id:
             return False
 
@@ -500,6 +502,20 @@ def joystick_pointer_location(
     return anchor_world_y + offset_y, POINTER_ANCHOR_Z + offset_z
 
 
+def reset_interaction_session(session: InteractionSession) -> None:
+    session.active = False
+    session.mode = "idle"
+    session.engaged_at = None
+    session.grab_locked = False
+    session.lost_started_at = None
+    session.thrust_ready = False
+    session.retreat_started_at = None
+    session.released_at = None
+    session.grab_recover_until = None
+    session.left_pointer_locked = False
+    session.right_pointer_locked = False
+
+
 def end_interaction(
     session: InteractionSession,
     footprint_store: VADFootprintStore,
@@ -518,7 +534,26 @@ def end_interaction(
     session.retreat_started_at = None
     session.released_at = now
     session.grab_recover_until = now + GRAB_RECOVERY_SECONDS if should_open_recovery else None
-    footprint_store.remember_pending(world_vad)
+    footprint_store.record_interaction(world_vad, "interaction_settled")
+
+
+def recover_world_vad_after_release(
+    session: InteractionSession,
+    memory: BaseMemoryState,
+    world_vad: tuple[float, float, float],
+    now: float,
+) -> tuple[float, float, float]:
+    if session.active or session.released_at is None:
+        return world_vad
+
+    if now - session.released_at < VAD_RELEASE_HOLD_SECONDS:
+        return world_vad
+
+    base_vad = memory.current_base()
+    return tuple(
+        lerp(world_vad[idx], base_vad[idx], VAD_RECOVERY_ALPHA)
+        for idx in range(3)
+    )
 
 
 def activate_grab_session(
@@ -738,8 +773,8 @@ def main() -> None:
         default=Path(__file__).resolve().parents[2] / "vad_footprint",
         help="Directory where per-world VAD footprint JSON files are stored.",
     )
-    parser.add_argument("--camera-width", type=int, default=640, help="Requested webcam capture width.")
-    parser.add_argument("--camera-height", type=int, default=360, help="Requested webcam capture height.")
+    parser.add_argument("--camera-width", type=int, default=1280, help="Requested webcam capture width.")
+    parser.add_argument("--camera-height", type=int, default=720, help="Requested webcam capture height.")
     parser.add_argument("--camera-fps", type=int, default=30, help="Requested webcam FPS.")
     parser.add_argument("--camera-exposure", type=float, default=None, help="Optional camera exposure value.")
     parser.add_argument("--camera-gain", type=float, default=None, help="Optional camera gain value.")
@@ -933,8 +968,12 @@ def main() -> None:
             right_features = right_tracker.update(hand_results, pose_landmarks, now)
             left_features = left_tracker.update(hand_results, pose_landmarks, now)
             switch_to_camera = False
-            if args.send and world_vad_state.poll_unreal(ue, memory, now) and not session.active:
+            was_active = session.active
+            world_changed = args.send and world_vad_state.poll_unreal(ue, memory, now)
+            if world_changed:
                 world_vad = memory.current_base()
+                reset_interaction_session(session)
+                pointer_state.reset(world_vad_state.current_world_number)
             if args.send_pd:
                 desired_pd_mode = pd_mode_from_world_id(world_vad_state.current_world_id)
                 if desired_pd_mode is not None and desired_pd_mode != pd_mode:
@@ -971,13 +1010,11 @@ def main() -> None:
                 span_x = 0.0
                 span_y = 0.0
 
-            if not session.active:
+            if not session.active and session.released_at is None:
                 world_vad = tuple(
                     lerp(world_vad[idx], base_vad[idx], 1.0 / (25.0 * 30.0))
                     for idx in range(3)
                 )
-
-            was_active = session.active
 
             if not pointer_world_active:
                 if session.active:
@@ -1085,20 +1122,10 @@ def main() -> None:
                         end_interaction(session, footprint_store, world_vad, now, allow_grab_recovery=True)
 
             if not session.active and session.released_at is not None:
-                if footprint_store.pending_vad is not None:
-                    world_vad, _ = footprint_store.step_toward_pending(memory, world_vad)
-                else:
-                    elapsed = now - session.released_at
-                    if elapsed >= 5.0:
-                        base_vad = memory.current_base()
-                        recovery_alpha = 1.0 / max(25.0 * 30.0, 1.0)
-                        world_vad = tuple(
-                            lerp(world_vad[idx], base_vad[idx], recovery_alpha)
-                            for idx in range(3)
-                        )
+                world_vad = recover_world_vad_after_release(session, memory, world_vad, now)
 
             if switch_to_camera:
-                footprint_store.commit_current(world_vad, memory, "switch_to_galaxy")
+                footprint_store.record_interaction(world_vad, "switch_to_galaxy")
                 if args.send_pd and pd_mode != "space":
                     pd.set_space_mode()
                     pd_mode = "space"

@@ -117,8 +117,8 @@ uv run final-interaction --camera 0 --send --send-pd
 --world-json-dir PATH       world_XXXX.json 파일 폴더. 기본값: ../world_spawn_json
 --world-poll-sec FLOAT      Unreal에서 현재 world id를 읽는 주기. 기본값: 0.1
 --vad-footprint-dir PATH    world별 VAD footprint 저장 폴더. 기본값: ../vad_footprint
---camera-width INT          요청할 웹캠 너비. 기본값: 640
---camera-height INT         요청할 웹캠 높이. 기본값: 360
+--camera-width INT          요청할 웹캠 너비. 기본값: 1280
+--camera-height INT         요청할 웹캠 높이. 기본값: 720
 --camera-fps INT            요청할 웹캠 FPS. 기본값: 30
 --pose-every INT            N프레임마다 pose detection 실행. 기본값: 3, 0이면 pose fallback 비활성화
 --preview-overlay           카메라 프리뷰에 핵심 상태와 손/포즈 스켈레톤 표시. 기본값: 켜짐
