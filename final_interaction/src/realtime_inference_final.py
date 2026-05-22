@@ -593,13 +593,19 @@ def left_solo_galaxy_debug_state(session: InteractionSession, now: float) -> dic
         elapsed = max(0.0, now - session.left_solo_grab_started_at)
     hold_progress = clamp(elapsed / LEFT_SOLO_GRAB_HOLD_SECONDS, 0.0, 1.0)
     restore_active = active and hold_progress >= 1.0
+    swipe_delta = session.left_solo_grab_delta_x if active else 0.0
+    swipe_velocity = session.left_solo_grab_velocity_x if active else 0.0
+    swipe_progress = clamp(max(0.0, swipe_delta) / LEFT_SOLO_GRAB_SWIPE_DELTA_X, 0.0, 1.0)
+    swipe_velocity_ready = active and swipe_velocity >= LEFT_SOLO_GRAB_SWIPE_VELOCITY_X
     return {
         "left_solo_grab_active": active,
         "left_solo_grab_elapsed": elapsed,
         "left_solo_grab_hold_progress": hold_progress,
         "left_solo_vad_restore_active": restore_active,
-        "left_solo_swipe_delta_x": session.left_solo_grab_delta_x if active else 0.0,
-        "left_solo_swipe_velocity_x": session.left_solo_grab_velocity_x if active else 0.0,
+        "left_solo_swipe_delta_x": swipe_delta,
+        "left_solo_swipe_velocity_x": swipe_velocity,
+        "left_solo_swipe_progress": swipe_progress,
+        "left_solo_swipe_velocity_ready": swipe_velocity_ready,
         "left_solo_world_move_ready": restore_active and not session.left_solo_grab_fired,
         "left_solo_world_move_fired": session.left_solo_grab_fired,
     }

@@ -119,7 +119,10 @@ if QtWidgets is not None:
             self._draw_world_pulse(painter, state, width, height, scale)
             self._draw_vad_bars(painter, state, width, height, scale)
             self._draw_mode_ring(painter, state, width, height, scale)
-            self._draw_hand_orb(painter, state.left, width * 0.16, height * 0.58, scale, "L")
+            left_cx = width * 0.16
+            hand_cy = height * 0.58
+            self._draw_hand_orb(painter, state.left, left_cx, hand_cy, scale, "L")
+            self._draw_left_solo_gesture(painter, state, left_cx, hand_cy, scale)
             self._draw_hand_orb(painter, state.right, width * 0.84, height * 0.58, scale, "R")
             self._draw_pointer(painter, state, width, height, scale)
             if state.switch_to_camera:
@@ -186,6 +189,97 @@ if QtWidgets is not None:
             painter.setPen(self._pen(QtGui.QColor(235, 255, 255, alpha), 1.0))
             painter.setFont(QtGui.QFont("Arial", max(9, int(12 * scale)), QtGui.QFont.Weight.Bold))
             painter.drawText(QtCore.QRectF(cx - 20, cy - 10, 40, 20), QtCore.Qt.AlignmentFlag.AlignCenter, label)
+
+        def _draw_left_solo_gesture(self, painter, state: HudFrameState, cx: float, cy: float, scale: float) -> None:
+            if not state.world_active and not state.left_solo_grab_active and not state.left_solo_world_move_fired:
+                return
+
+            active = state.left_solo_grab_active
+            hold_progress = max(0.0, min(state.left_solo_grab_hold_progress, 1.0))
+            swipe_progress = max(0.0, min(state.left_solo_swipe_progress, 1.0))
+            restore = state.left_solo_vad_restore_active
+            ready = state.left_solo_world_move_ready
+            fired = state.left_solo_world_move_fired
+            velocity_ready = state.left_solo_swipe_velocity_ready
+            pulse = 0.5 + 0.5 * math.sin(state.timestamp * 8.0)
+
+            track_alpha = 70 if state.world_active else 35
+            active_alpha = 185 if active else 60
+            restore_alpha = 220 if restore else active_alpha
+            hold_color = QtGui.QColor(120, 255, 150, restore_alpha) if restore else QtGui.QColor(80, 230, 255, active_alpha)
+            if fired:
+                hold_color = QtGui.QColor(255, 255, 255, 210)
+
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            ring_radius = 46.0 * scale
+            ring_rect = QtCore.QRectF(
+                cx - ring_radius,
+                cy - ring_radius,
+                ring_radius * 2.0,
+                ring_radius * 2.0,
+            )
+            painter.setPen(self._pen(QtGui.QColor(220, 230, 235, track_alpha), 2.0 * scale))
+            painter.drawEllipse(ring_rect)
+            painter.setPen(self._pen(hold_color, 4.0 * scale))
+            painter.drawArc(ring_rect, 90 * 16, int(-360 * hold_progress * 16))
+
+            dot_y = cy + 60.0 * scale
+            dot_spacing = 18.0 * scale
+            dot_start = cx - dot_spacing
+            dot_colors = (
+                QtGui.QColor(255, 120, 190, 190),
+                QtGui.QColor(80, 220, 255, 190),
+                QtGui.QColor(130, 255, 130, 190),
+            )
+            for idx, color in enumerate(dot_colors):
+                threshold = (idx + 1) / 3.0
+                lit = restore or hold_progress >= threshold
+                alpha = 205 if restore else 135 if lit else 45
+                radius = (5.0 if lit else 3.5) * scale
+                if restore:
+                    radius += pulse * 1.5 * scale
+                painter.setBrush(QtGui.QBrush(QtGui.QColor(color.red(), color.green(), color.blue(), alpha)))
+                painter.setPen(QtCore.Qt.PenStyle.NoPen)
+                painter.drawEllipse(QtCore.QPointF(dot_start + idx * dot_spacing, dot_y), radius, radius)
+
+            rail_x = cx + 56.0 * scale
+            rail_y = cy - 2.0 * scale
+            rail_width = 126.0 * scale
+            rail_color = QtGui.QColor(220, 230, 235, 55)
+            progress_color = QtGui.QColor(120, 255, 150, 180 if ready else 110)
+            if not restore:
+                progress_color = QtGui.QColor(80, 230, 255, 85 if active else 45)
+            if velocity_ready:
+                progress_color = QtGui.QColor(165, 255, 190, 220)
+            if fired:
+                progress_color = QtGui.QColor(255, 255, 255, 230)
+
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.setPen(self._pen(rail_color, 3.0 * scale))
+            painter.drawLine(QtCore.QPointF(rail_x, rail_y), QtCore.QPointF(rail_x + rail_width, rail_y))
+            painter.setPen(self._pen(progress_color, 4.0 * scale))
+            painter.drawLine(
+                QtCore.QPointF(rail_x, rail_y),
+                QtCore.QPointF(rail_x + rail_width * swipe_progress, rail_y),
+            )
+
+            tip_x = rail_x + rail_width + 14.0 * scale
+            arrow = QtGui.QPolygonF(
+                [
+                    QtCore.QPointF(tip_x, rail_y),
+                    QtCore.QPointF(tip_x - 14.0 * scale, rail_y - 8.0 * scale),
+                    QtCore.QPointF(tip_x - 14.0 * scale, rail_y + 8.0 * scale),
+                ]
+            )
+            painter.setBrush(QtGui.QBrush(progress_color if restore or active else rail_color))
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.drawPolygon(arrow)
+
+            if ready or fired:
+                glow_radius = (10.0 + pulse * 7.0) * scale
+                glow_alpha = 35 + int(pulse * 45) if fired else 32
+                painter.setBrush(QtGui.QBrush(QtGui.QColor(120, 255, 150, glow_alpha)))
+                painter.drawEllipse(QtCore.QPointF(tip_x - 7.0 * scale, rail_y), glow_radius, glow_radius)
 
         def _draw_pointer(self, painter, state: HudFrameState, width: int, height: int, scale: float) -> None:
             if not state.interaction_active or state.pointer_x < 0.0 or state.pointer_y < 0.0:

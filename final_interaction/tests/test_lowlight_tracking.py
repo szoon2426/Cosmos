@@ -20,6 +20,7 @@ from src.realtime_inference_final import (
     BaseMemoryState,
     GRAB_RECOVERY_SECONDS,
     InteractionSession,
+    LEFT_SOLO_GRAB_SWIPE_DELTA_X,
     PointerRuntimeState,
     VADFootprintStore,
     WorldVADState,
@@ -503,6 +504,8 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertFalse(state.left_solo_vad_restore_active)
         self.assertEqual(state.left_solo_swipe_delta_x, 0.0)
         self.assertEqual(state.left_solo_swipe_velocity_x, 0.0)
+        self.assertEqual(state.left_solo_swipe_progress, 0.0)
+        self.assertFalse(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
         self.assertFalse(state.left_solo_world_move_fired)
 
@@ -539,6 +542,8 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertFalse(state.left_solo_vad_restore_active)
         self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.1)
         self.assertAlmostEqual(state.left_solo_swipe_velocity_x, 0.04)
+        self.assertAlmostEqual(state.left_solo_swipe_progress, 0.1 / LEFT_SOLO_GRAB_SWIPE_DELTA_X)
+        self.assertFalse(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
         self.assertFalse(state.left_solo_world_move_fired)
 
@@ -572,6 +577,8 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertTrue(state.left_solo_grab_active)
         self.assertAlmostEqual(state.left_solo_grab_hold_progress, 1.0)
         self.assertTrue(state.left_solo_vad_restore_active)
+        self.assertGreater(state.left_solo_swipe_progress, 0.0)
+        self.assertFalse(state.left_solo_swipe_velocity_ready)
         self.assertTrue(state.left_solo_world_move_ready)
         self.assertFalse(state.left_solo_world_move_fired)
 
@@ -614,6 +621,8 @@ class LowlightTrackingTests(unittest.TestCase):
         self.assertTrue(state.left_solo_vad_restore_active)
         self.assertAlmostEqual(state.left_solo_swipe_delta_x, 0.24)
         self.assertGreaterEqual(state.left_solo_swipe_velocity_x, 1.2)
+        self.assertEqual(state.left_solo_swipe_progress, 1.0)
+        self.assertTrue(state.left_solo_swipe_velocity_ready)
         self.assertFalse(state.left_solo_world_move_ready)
         self.assertTrue(state.left_solo_world_move_fired)
 

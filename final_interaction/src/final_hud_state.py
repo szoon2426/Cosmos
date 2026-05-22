@@ -66,6 +66,8 @@ class HudFrameState:
     left_solo_vad_restore_active: bool
     left_solo_swipe_delta_x: float
     left_solo_swipe_velocity_x: float
+    left_solo_swipe_progress: float
+    left_solo_swipe_velocity_ready: bool
     left_solo_world_move_ready: bool
     left_solo_world_move_fired: bool
 
@@ -115,6 +117,8 @@ def hud_frame_state(
     left_solo_vad_restore_active: bool = False,
     left_solo_swipe_delta_x: float = 0.0,
     left_solo_swipe_velocity_x: float = 0.0,
+    left_solo_swipe_progress: float = 0.0,
+    left_solo_swipe_velocity_ready: bool = False,
     left_solo_world_move_ready: bool = False,
     left_solo_world_move_fired: bool = False,
 ) -> HudFrameState:
@@ -157,6 +161,8 @@ def hud_frame_state(
         left_solo_vad_restore_active=left_solo_vad_restore_active,
         left_solo_swipe_delta_x=left_solo_swipe_delta_x,
         left_solo_swipe_velocity_x=left_solo_swipe_velocity_x,
+        left_solo_swipe_progress=left_solo_swipe_progress,
+        left_solo_swipe_velocity_ready=left_solo_swipe_velocity_ready,
         left_solo_world_move_ready=left_solo_world_move_ready,
         left_solo_world_move_fired=left_solo_world_move_fired,
     )
