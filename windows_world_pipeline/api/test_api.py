@@ -50,6 +50,7 @@ def sample_payload() -> dict[str, Any]:
                     "network_bridges": {"score": 0.52, "value": 0.5},
                     "inward_drift": {"score": 0.47, "value": 0.6},
                     "affective_tilt": {"score": 0.49, "value": -0.2},
+                    "hemispheric_balance": {"score": 2.03, "value": 0.73},
                     "neural_texture": {"score": 0.61, "value": 0.7},
                     "temporal_weather": {"score": 0.57, "value": 0.8},
                 },
@@ -122,11 +123,17 @@ def test_generate_world_creates_outputs(monkeypatch, tmp_path):
     assert instruction["person_name"] == "백인호"
     assert instruction["world_number"] == 1
     assert instruction["source_eeg"]["vad"] == {"valence": 0.6, "arousal": 0.3, "dominance": 0.4}
+    assert instruction["source_eeg"]["statue_traits"]["network_bridges"] == {"score": 0.52, "value": 0.5}
+    assert instruction["source_eeg"]["placement_traits"]["hemispheric_balance"] == {"score": 2.03, "value": 0.73}
 
     expected_unreal_vad = {"valence": 0.2, "arousal": -0.4, "dominance": -0.2}
     world_spawn = json.loads(Path(body["world_spawn_path"]).read_text(encoding="utf-8"))
     vad_footprint = json.loads(Path(body["vad_footprint_path"]).read_text(encoding="utf-8"))
     assert world_spawn["base_vad"] == expected_unreal_vad
+    assert world_spawn["flower_color_group"] == "red_yellow"
+    assert next(asset["mesh"] for asset in world_spawn["assets"] if asset["asset_key"] == "fountain") == "basic"
+    assert next(asset["mesh"] for asset in world_spawn["assets"] if asset["asset_key"] == "statue") == "network_bridges"
+    assert len([asset for asset in world_spawn["assets"] if asset["asset_key"] == "tree"]) == 2
     assert vad_footprint["base_vad"] == expected_unreal_vad
     assert vad_footprint["current_vad"] == expected_unreal_vad
 

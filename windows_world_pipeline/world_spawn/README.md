@@ -145,6 +145,15 @@ campion_1, campion_2, gazania_1, gazania_2, crownbeard_1, crownbeard_2, windflow
 
 LLM은 `flower_color_group`과 `flower_types`를 제안할 수 있고, Python은 유효한 mesh key만 world spawn JSON에 저장합니다.
 
+Final flower color is chosen from VAD quadrants in `source_eeg.vad`; this overrides the LLM flower color/type suggestion.
+
+```text
+valence >= 0.5, arousal >= 0.5 -> red
+valence <  0.5, arousal >= 0.5 -> purple
+valence <  0.5, arousal <  0.5 -> yellow
+valence >= 0.5, arousal <  0.5 -> red_yellow
+```
+
 ## Fountain / Statue Mesh
 
 `fountain`과 `statue` asset에는 `mesh` 필드가 추가됩니다.
@@ -163,22 +172,50 @@ Statue mesh:
 ```text
 inner_quietness
 neural_tempo
-resonance_clarity
-arousal_drift
+inward_drift
+activation_edge
 frontal_tilt
+resonance_clarity
+network_bridges
 ```
 
-Statue는 EEG JSON의 `world_style` 중 가장 높은 값을 기준으로 선택합니다.
+Statue selection rule:
+- If `network_bridges.score >= 0.5`, spawn the network_bridges statue.
+- Otherwise choose the highest score among the 7 statue traits.
+- If scores tie, choose the trait with the highest value.
+
+Statue는 EEG JSON의 `statue_traits` 중 가장 높은 값을 기준으로 선택합니다.
 
 ```text
-quietness -> inner_quietness
-tempo -> neural_tempo
-clarity -> resonance_clarity
-drift / bandwidth -> arousal_drift
-abs(frontal_tilt) -> frontal_tilt
+내적 안정감     inner_calm        -> inner_quietness
+인지 템포       cognitive_tempo   -> neural_tempo
+내향적 흐름     inward_drift      -> inward_drift
+활성화 경계     activation_edge   -> activation_edge
+정서 기울기     affective_tilt    -> frontal_tilt
+리듬 선명도     rhythm_clarity    -> resonance_clarity
+네트워크 연결감 network_bridges   -> network_bridges
 ```
 
-Fountain은 VAD와 EEG feature의 relaxation, engagement, alpha, beta, theta, gamma 값을 기준으로 선택합니다.
+Tree count is based on hemispheric balance:
+
+```text
+tree_count = min(8, ceil(source_eeg.placement_traits.hemispheric_balance.score / 10) + 1)
+```
+
+Fountain selection rule:
+- Choose the lowest score among the 7 `statue_traits`.
+- If scores tie, choose the trait with the lowest value.
+- Legacy VAD/feature thresholds are used only when `statue_traits` is missing.
+
+```text
+inner_calm      -> plate_round
+cognitive_tempo -> basic
+inward_drift    -> basic
+activation_edge -> pillar_round
+affective_tilt  -> rock_octagon
+rhythm_clarity  -> plate_round
+network_bridges -> rock_octagon
+```
 
 Statue 위치와 스케일:
 

@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import random
+from math import ceil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,11 +15,48 @@ FLOWER_GROUPS = {
     "red": ["silver_downy_2", "bougainv_1", "bougainv_2", "dianthus_1", "dianthus_2", "daisy_1", "daisy_2"],
     "yellow": ["campion_1", "campion_2", "gazania_1", "gazania_2", "crownbeard_1", "crownbeard_2", "windflower_1", "windflower_2"],
 }
+FLOWER_GROUPS["red_yellow"] = FLOWER_GROUPS["red"] + FLOWER_GROUPS["yellow"]
 FLOWER_TYPES = [flower for flowers in FLOWER_GROUPS.values() for flower in flowers]
 PLANET_MESH_TYPES = ["basic_planet", "sharp_planet", "smooth_planet", "complicated_planet", "simple_planet"]
 PLANET_MATERIAL_TYPES = ["yellow", "blue", "green", "orange", "purple", "gold", "red", "pink"]
 FOUNTAIN_MESH_TYPES = ["rock_octagon", "plate_round", "pillar_round", "basic"]
-STATUE_MESH_TYPES = ["inner_quietness", "neural_tempo", "resonance_clarity", "arousal_drift", "frontal_tilt"]
+FOUNTAIN_TRAIT_TO_MESH = {
+    "inner_calm": "plate_round",
+    "cognitive_tempo": "basic",
+    "inward_drift": "basic",
+    "activation_edge": "pillar_round",
+    "affective_tilt": "rock_octagon",
+    "rhythm_clarity": "plate_round",
+    "network_bridges": "rock_octagon",
+}
+STATUE_MESH_TYPES = [
+    "inner_quietness",
+    "neural_tempo",
+    "inward_drift",
+    "activation_edge",
+    "frontal_tilt",
+    "resonance_clarity",
+    "network_bridges",
+]
+STATUE_TRAIT_TO_MESH = {
+    "inner_calm": "inner_quietness",
+    "cognitive_tempo": "neural_tempo",
+    "inward_drift": "inward_drift",
+    "activation_edge": "activation_edge",
+    "affective_tilt": "frontal_tilt",
+    "rhythm_clarity": "resonance_clarity",
+    "network_bridges": "network_bridges",
+}
+STATUE_TRAIT_ORDER = [
+    "inner_calm",
+    "cognitive_tempo",
+    "inward_drift",
+    "activation_edge",
+    "affective_tilt",
+    "rhythm_clarity",
+    "network_bridges",
+]
+NETWORK_BRIDGES_FORCE_THRESHOLD = 0.5
 
 FRONT_X = -2000.0
 BACK_X = 300.0
@@ -32,6 +70,7 @@ STATUE_MIN_X = 30.0
 STATUE_MAX_X = 310.0
 STATUE_MIN_SCALE = 1.25
 STATUE_MAX_SCALE = 1.35
+TREE_COUNT_MAX = 8
 
 
 def load_json(path: Path, default: Any | None = None) -> Any:
@@ -120,6 +159,18 @@ def normalize_flower_types(values: Any) -> list[str]:
 
 
 def infer_flower_group(instruction: dict[str, Any], atmosphere: list[str]) -> str:
+    vad = instruction.get("source_eeg", {}).get("vad", {})
+    if isinstance(vad, dict) and vad:
+        valence = number_from(vad, "valence")
+        arousal = number_from(vad, "arousal")
+        if valence >= 0.5 and arousal >= 0.5:
+            return "red"
+        if valence < 0.5 and arousal >= 0.5:
+            return "purple"
+        if valence < 0.5 and arousal < 0.5:
+            return "yellow"
+        return "red_yellow"
+
     requested = str(instruction.get("flower_color_group", "")).strip()
     if requested in FLOWER_GROUPS:
         return requested
@@ -139,12 +190,13 @@ def infer_flower_group(instruction: dict[str, Any], atmosphere: list[str]) -> st
 
 
 def pick_flowers(rng: random.Random, instruction: dict[str, Any], atmosphere: list[str]) -> list[str]:
+    group = infer_flower_group(instruction, atmosphere)
+    vad = instruction.get("source_eeg", {}).get("vad", {})
     explicit_flowers = normalize_flower_types(instruction.get("flower_types"))
-    if len(explicit_flowers) >= 2:
+    if not (isinstance(vad, dict) and vad) and len(explicit_flowers) >= 2:
         return explicit_flowers
 
     count = rng.randint(2, 5)
-    group = infer_flower_group(instruction, atmosphere)
     weighted = list(FLOWER_GROUPS[group])
 
     flowers: list[str] = []
@@ -192,25 +244,66 @@ def number_from(data: dict[str, Any], key: str, default: float = 0.5) -> float:
         return default
 
 
+def trait_number(traits: dict[str, Any], trait: str, field: str, default: float = -1.0) -> float:
+    item = traits.get(trait, {})
+    if not isinstance(item, dict):
+        return default
+    return number_from(item, field, default)
+
+
+def tree_count_from_hemispheric_balance(source_eeg: dict[str, Any]) -> int:
+    placement_traits = source_eeg.get("placement_traits", {})
+    score = trait_number(placement_traits, "hemispheric_balance", "score", 1.0)
+    return max(1, min(TREE_COUNT_MAX, ceil(score / 10.0) + 1))
+
+
+def build_trees(rng: random.Random, count: int) -> list[dict[str, Any]]:
+    trees: list[dict[str, Any]] = []
+    for index in range(count):
+        side = -1 if index % 2 == 0 else 1
+        x = round(rng.uniform(560.0, 760.0), 2)
+        y = round(side * rng.uniform(280.0, 620.0), 2)
+        scale_value = round(rng.uniform(1.12, 1.34), 3)
+        yaw = round(rng.uniform(-18.0, 18.0), 2)
+        trees.append(asset("tree", [x, y, 0], [scale_value, scale_value, scale_value], yaw))
+    return trees
+
+
 def pick_statue_mesh(source_eeg: dict[str, Any]) -> str:
+    statue_traits = source_eeg.get("statue_traits", {})
+    if isinstance(statue_traits, dict) and statue_traits:
+        network_score = trait_number(statue_traits, "network_bridges", "score")
+        if network_score >= NETWORK_BRIDGES_FORCE_THRESHOLD:
+            return STATUE_TRAIT_TO_MESH["network_bridges"]
+
+        selected_trait = max(
+            STATUE_TRAIT_ORDER,
+            key=lambda trait: (
+                trait_number(statue_traits, trait, "score"),
+                trait_number(statue_traits, trait, "value"),
+            ),
+        )
+        return STATUE_TRAIT_TO_MESH[selected_trait]
+
     world_style = source_eeg.get("world_style", {})
     if isinstance(world_style, dict) and world_style:
         scores = {
             "inner_quietness": number_from(world_style, "quietness", -1.0),
             "neural_tempo": number_from(world_style, "tempo", -1.0),
-            "resonance_clarity": number_from(world_style, "clarity", -1.0),
-            "arousal_drift": max(
-                number_from(world_style, "drift", -1.0),
-                number_from(world_style, "bandwidth", -1.0),
-            ),
+            "inward_drift": number_from(world_style, "drift", -1.0),
+            "activation_edge": number_from(source_eeg.get("features", {}), "engagement", -1.0),
             "frontal_tilt": abs(number_from(world_style, "frontal_tilt", 0.0)),
+            "resonance_clarity": number_from(world_style, "clarity", -1.0),
+            "network_bridges": number_from(world_style, "bandwidth", -1.0),
         }
+        if scores["network_bridges"] >= NETWORK_BRIDGES_FORCE_THRESHOLD:
+            return "network_bridges"
         return max(scores, key=scores.get)
 
     vad = source_eeg.get("vad", {})
     features = source_eeg.get("features", {})
     if number_from(vad, "arousal") > 0.66:
-        return "arousal_drift"
+        return "activation_edge"
     if number_from(vad, "dominance") > 0.66:
         return "resonance_clarity"
     if number_from(features, "relaxation") > 0.66 or number_from(vad, "arousal") < 0.34:
@@ -221,6 +314,17 @@ def pick_statue_mesh(source_eeg: dict[str, Any]) -> str:
 
 
 def pick_fountain_mesh(source_eeg: dict[str, Any]) -> str:
+    statue_traits = source_eeg.get("statue_traits", {})
+    if isinstance(statue_traits, dict) and statue_traits:
+        selected_trait = min(
+            STATUE_TRAIT_ORDER,
+            key=lambda trait: (
+                trait_number(statue_traits, trait, "score"),
+                trait_number(statue_traits, trait, "value"),
+            ),
+        )
+        return FOUNTAIN_TRAIT_TO_MESH[selected_trait]
+
     vad = source_eeg.get("vad", {})
     features = source_eeg.get("features", {})
     arousal = number_from(vad, "arousal")
@@ -253,6 +357,7 @@ def build_world_spawn(instruction: dict[str, Any], world_space: int) -> dict[str
     rng = random.Random(seed)
     fountain_mesh = pick_fountain_mesh(source_eeg)
     statue_mesh = pick_statue_mesh(source_eeg)
+    tree_count = tree_count_from_hemispheric_balance(source_eeg)
 
     pond_y = rng.choice([-260, 260])
     statue_location = pick_statue_location(rng, pond_y)
@@ -266,8 +371,7 @@ def build_world_spawn(instruction: dict[str, Any], world_space: int) -> dict[str
             yaw_toward_camera(statue_location),
             mesh=statue_mesh,
         ),
-        asset("tree", [620, -340, 0], [1.25, 1.25, 1.25], 0.0),
-        asset("tree", [660, 340, 0], [1.18, 1.18, 1.18], 0.0),
+        *build_trees(rng, tree_count),
         asset("rock_path", [-730, 40, 0], [0.9, 0.75, 1.0], 0.0),
         asset("rock_path", [-560, pond_y * 0.28, 0], [0.95, 0.75, 1.0], 5.0),
         asset("rock_path", [-390, pond_y * 0.55, 0], [0.9, 0.75, 1.0], -7.0),

@@ -166,6 +166,23 @@ def trait_value(traits: dict[str, Any], name: str, default: float = 0.0) -> floa
         return default
 
 
+def statue_trait(traits: dict[str, Any], name: str, default_score: float = 0.0) -> dict[str, float]:
+    return {
+        "score": trait_score(traits, name, default_score),
+        "value": round(trait_value(traits, name), 4),
+    }
+
+
+def raw_trait_score(traits: dict[str, Any], name: str, default: float = 0.0) -> float:
+    trait = traits.get(name, {})
+    if not isinstance(trait, dict):
+        return default
+    try:
+        return float(trait.get("score", default))
+    except (TypeError, ValueError):
+        return default
+
+
 def normalize_eeg_payload(eeg: dict[str, Any]) -> dict[str, Any]:
     if "result" not in eeg:
         return eeg
@@ -203,6 +220,21 @@ def normalize_eeg_payload(eeg: dict[str, Any]) -> dict[str, Any]:
             "frontal_tilt": round(trait_value(traits, "affective_tilt"), 4),
             "texture": trait_score(traits, "neural_texture"),
             "ecology": trait_score(traits, "temporal_weather"),
+        },
+        "statue_traits": {
+            "inner_calm": statue_trait(traits, "inner_calm"),
+            "cognitive_tempo": statue_trait(traits, "cognitive_tempo"),
+            "inward_drift": statue_trait(traits, "inward_drift"),
+            "activation_edge": statue_trait(traits, "activation_edge"),
+            "affective_tilt": statue_trait(traits, "affective_tilt"),
+            "rhythm_clarity": statue_trait(traits, "rhythm_clarity"),
+            "network_bridges": statue_trait(traits, "network_bridges"),
+        },
+        "placement_traits": {
+            "hemispheric_balance": {
+                "score": round(raw_trait_score(traits, "hemispheric_balance"), 4),
+                "value": round(trait_value(traits, "hemispheric_balance"), 4),
+            },
         },
         "quality": {
             "low_confidence": bool(result.get("low_confidence", False)),

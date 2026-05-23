@@ -184,6 +184,15 @@ windflower_2
 
 LLM이 `flower_color_group`과 `flower_types`를 제안하고, Python이 유효한 mesh key만 저장합니다.
 
+최종 꽃 색상은 `source_eeg.vad`의 VAD 사분면으로 결정하며, LLM 꽃 색상/타입 제안보다 우선합니다.
+
+```text
+valence >= 0.5, arousal >= 0.5 -> red
+valence <  0.5, arousal >= 0.5 -> purple
+valence <  0.5, arousal <  0.5 -> yellow
+valence >= 0.5, arousal <  0.5 -> red_yellow
+```
+
 ## Fountain / Statue Mesh 규칙
 
 `fountain`과 `statue` asset은 공통 필드에 더해 `mesh` 필드를 가집니다.
@@ -212,24 +221,30 @@ Statue mesh:
 ```text
 inner_quietness
 neural_tempo
-resonance_clarity
-arousal_drift
+inward_drift
+activation_edge
 frontal_tilt
+resonance_clarity
+network_bridges
 ```
 
-Statue는 EEG JSON의 `world_style` 값 중 가장 강한 성향을 기준으로 고릅니다.
+Statue selection rule:
+- If `network_bridges.score >= 0.5`, spawn the network_bridges statue.
+- Otherwise choose the highest score among the 7 statue traits.
+- If scores tie, choose the trait with the highest value.
+
+Statue는 EEG JSON의 `statue_traits` 값 중 가장 강한 성향을 기준으로 고릅니다.
 
 ```json
 {
-  "world_style": {
-    "quietness": 0.78,
-    "tempo": 0.42,
-    "clarity": 0.66,
-    "bandwidth": 0.81,
-    "drift": 0.35,
-    "frontal_tilt": -0.24,
-    "texture": 0.58,
-    "ecology": 0.73
+  "statue_traits": {
+    "inner_calm": {"score": 0.78, "value": 0.33},
+    "cognitive_tempo": {"score": 0.42, "value": 9.6},
+    "inward_drift": {"score": 0.35, "value": 0.52},
+    "activation_edge": {"score": 0.61, "value": 0.72},
+    "affective_tilt": {"score": 0.54, "value": -0.24},
+    "rhythm_clarity": {"score": 0.66, "value": 1.84},
+    "network_bridges": {"score": 0.49, "value": 0.58}
   }
 }
 ```
@@ -237,14 +252,35 @@ Statue는 EEG JSON의 `world_style` 값 중 가장 강한 성향을 기준으로
 기본 매핑:
 
 ```text
-quietness -> inner_quietness
-tempo -> neural_tempo
-clarity -> resonance_clarity
-drift / bandwidth -> arousal_drift
-abs(frontal_tilt) -> frontal_tilt
+내적 안정감     inner_calm        -> inner_quietness
+인지 템포       cognitive_tempo   -> neural_tempo
+내향적 흐름     inward_drift      -> inward_drift
+활성화 경계     activation_edge   -> activation_edge
+정서 기울기     affective_tilt    -> frontal_tilt
+리듬 선명도     rhythm_clarity    -> resonance_clarity
+네트워크 연결감 network_bridges   -> network_bridges
 ```
 
-Fountain은 VAD와 EEG feature를 기준으로 고릅니다.
+Tree count:
+
+```text
+tree_count = min(8, ceil(source_eeg.placement_traits.hemispheric_balance.score / 10) + 1)
+```
+
+Fountain selection rule:
+- Choose the lowest score among the 7 `statue_traits`.
+- If scores tie, choose the trait with the lowest value.
+- Legacy VAD/feature thresholds are used only when `statue_traits` is missing.
+
+```text
+inner_calm      -> plate_round
+cognitive_tempo -> basic
+inward_drift    -> basic
+activation_edge -> pillar_round
+affective_tilt  -> rock_octagon
+rhythm_clarity  -> plate_round
+network_bridges -> rock_octagon
+```
 
 Statue placement:
 
